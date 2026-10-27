@@ -25,7 +25,7 @@ const CALIB_TIME = 3;
 const COUNTDOWN = 3;
 const RUN_TIMEOUT = 1.1; // sans petit saut pendant ce temps, le personnage s'arrête
 const CADENCE_NORMAL = 2.6, PACE_PER_HOP = 0.45, PACE_MIN = 0.5, PACE_MAX = 1.6;
-const SEND_EVERY = 1 / 15; // état envoyé à l'adversaire 15 fois par seconde
+const SEND_EVERY = 1 / 12; // état envoyé à l'adversaire 12 fois par seconde
 const EMOJI = { garcon: '👦', fille: '👧' };
 
 const detector = new MotionDetector({ ...DEFAULTS, ...load('subway-sport-cfg', {}) });
@@ -141,7 +141,7 @@ net.onStatus = (s, detail) => {
   room.classList.toggle('ok', s === 'connecte');
   if (s === 'connecte') {
     $('roomText').textContent = `Salle ${net.code} · connecté`;
-    net.send({ t: 'hello', name: me.name, char: me.char, mic: me.mic, phase, wins: [wins.me, wins.opp] });
+    sendHello();
   } else if (s === 'attente') {
     $('roomText').textContent = `Salle ${net.code} · en attente de ton adversaire`;
   } else if (s === 'perdu') {
@@ -156,11 +156,9 @@ net.onStatus = (s, detail) => {
   }
 };
 
+net.onVoice = (ok) => toast(ok ? '🔊 Voix reliée' : '🔇 La voix ne passe pas entre vos deux réseaux (le jeu, si)', ok ? 2 : 5);
+
 net.onMessage = (m) => {
-  if (m.t === 'complet') {
-    toast('Cette salle a déjà deux joueurs', 5);
-    return;
-  }
   if (m.t === 'hello') {
     const fresh = !opp;
     opp = { phase: 'ready', st: null, final: null, alive: true, ...opp };
@@ -172,9 +170,9 @@ net.onMessage = (m) => {
     if (fresh) {
       toast(`${EMOJI[opp.char]} ${opp.name} est là !`);
       beep(660, 0.12, 'triangle', 0.08);
-      // On répond une fois pour que l'autre ait aussi notre fiche.
-      net.send({ t: 'hello', name: me.name, char: me.char, mic: me.mic, phase });
     }
+    // On répond si l'autre n'a pas encore notre fiche.
+    if (fresh || !m.have) sendHello();
     return;
   }
   if (!opp) return;
@@ -194,14 +192,19 @@ net.onMessage = (m) => {
   } else if (m.t === 'hit') {
     toast(`💥 ${oppName()} ${m.what === 'train' ? "s'est pris un train" : "s'est cogné(e)"} !`);
   } else if (m.t === 'over') {
+    const wasOver = opp.final !== null;
     opp.final = Math.max(0, Math.round(Number(m.score) || 0));
     opp.alive = false;
-    if (phase === 'play') toast(`☠️ ${oppName()} est éliminé(e) avec ${opp.final} — dépasse ce score !`, 4);
+    if (phase === 'play' && !wasOver) toast(`☠️ ${oppName()} est éliminé(e) avec ${opp.final} — dépasse ce score !`, 4);
   } else if (m.t === 'start' && !net.isHost) {
     // L'hôte donne le départ, avec la graine du parcours commun.
     if (phase === 'waiting' || phase === 'over' || phase === 'ready') startCountdown(Number(m.seed) >>> 0);
   }
 };
+
+function sendHello() {
+  net.send({ t: 'hello', name: me.name, char: me.char, mic: me.mic, phase, have: !!opp });
+}
 
 function sendPhase() {
   net.send({ t: 'phase', phase });
@@ -525,8 +528,18 @@ function updateHud(t) {
 }
 
 // État envoyé à l'adversaire
+let lastSlow = 0;
 function sendState(t) {
-  if (!net.connected || t - lastSend < SEND_EVERY) return;
+  if (!net.connected) return;
+  // Une fois par seconde, on répète ce qu'un message perdu ne doit pas bloquer.
+  if (t - lastSlow > 1) {
+    lastSlow = t;
+    if (!opp) sendHello();
+    sendPhase();
+    if (phase === 'over') net.send({ t: 'over', score: game.score });
+    if (phase === 'countdown' && net.isHost && t - phaseStart < 1.2) net.send({ t: 'start', seed });
+  }
+  if (t - lastSend < SEND_EVERY) return;
   lastSend = t;
   if (phase !== 'play') return;
   net.send({
