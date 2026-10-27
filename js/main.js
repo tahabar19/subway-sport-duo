@@ -1,8 +1,8 @@
 // Subway Sport Duo : caméra -> pose -> détecteur -> jeu, plus la liaison avec l'autre joueur.
-import { Game } from './game.js';
-import { MotionDetector, DEFAULTS } from './motion.js';
-import { Net, newCode, cleanCode } from './net.js';
-import { Voice, opusSupported } from './voice.js';
+import { Game } from './game.js?v=4';
+import { MotionDetector, DEFAULTS } from './motion.js?v=4';
+import { Net, newCode, cleanCode } from './net.js?v=4';
+import { Voice, opusSupported } from './voice.js?v=4';
 import { PoseLandmarker, FilesetResolver } from '../vendor/vision_bundle.mjs';
 
 const $ = (id) => document.getElementById(id);

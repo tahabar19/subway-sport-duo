@@ -22,3 +22,5 @@ Version à deux joueurs de Subway Sport (`~/Bureau/subway-sport`), en ligne sur 
 ## Tester sur un seul PC
 
 `python3 -m http.server 8790` puis deux fenêtres sur `http://localhost:8790/?sanscamera` (jeu au clavier).
+
+À chaque mise en ligne : augmenter le numéro `?v=` dans index.html et dans les import de js/main.js (cache GitHub de 10 min).
