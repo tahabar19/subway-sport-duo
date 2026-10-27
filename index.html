@@ -52,6 +52,7 @@
     font-size: 16px; font-weight: 800; color: #fff; background: rgba(12,22,44,.6); cursor: pointer; display: none; }
   #micBtn.on { display: block; }
   #micBtn.live { background: #1fae6b; }
+  #micBtn.talk { box-shadow: 0 0 0 4px rgba(61,255,162,.55); }
 
   /* ---- Écrans */
   .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -218,10 +219,8 @@
   </div>
 </div>
 <video id="video" playsinline muted></video>
-<audio id="remote" autoplay></audio>
 
 <script src="vendor/mqtt.min.js"></script>
-<script src="vendor/peerjs.min.js"></script>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

@@ -4,13 +4,12 @@
 // site web : ça passe sur tous les réseaux). Chaque message part sur les deux, on garde le
 // premier arrivé. Une salle = un « sujet » MQTT dérivé du code de partie.
 //
-// Voix : appel direct WebRTC (PeerJS), quand les deux réseaux le permettent.
-// Les relais gratuits de PeerJS ne répondent plus (vérifié le 27/10/2026) : derrière
-// certaines box ou en 4G, la voix peut donc ne pas passer, mais le jeu, lui, passe.
+// La voix passe par le même chemin (voir voice.js). Pas de connexion directe WebRTC :
+// les relais gratuits de PeerJS ne répondent plus (vérifié le 27/10/2026) et, entre deux
+// réseaux différents, rien ne passait.
 
 const BROKERS = ['wss://broker.hivemq.com:8884/mqtt', 'wss://broker.emqx.io:8084/mqtt'];
 const TOPIC = 'subwayduo/v1/';
-const PEER_PREFIX = 'subway-sport-duo-v2-';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const PING_EVERY = 1000; // ms
 const PARTNER_TIMEOUT = 6000; // ms sans nouvelles = adversaire parti
@@ -28,14 +27,9 @@ export class Net {
     this.partnerSeen = 0;
     this.seq = 0;
     this.seen = new Set(); // messages déjà reçus (ils arrivent en double, un par serveur)
-    this.lastSt = 0;
+    this.lastSeq = {}; // dernier n° reçu par type de flux continu (état, voix)
     this.onMessage = () => {};
     this.onStatus = () => {}; // 'attente' | 'connecte' | 'perdu' | 'erreur'
-    this.onRemoteAudio = () => {};
-    this.onVoice = () => {}; // (true) voix reliée, (false) voix impossible entre ces réseaux
-    this.localAudio = null;
-    this.peer = null;
-    this.call = null;
     this.timer = null;
   }
 
@@ -83,7 +77,6 @@ export class Net {
     // Aucun serveur joignable au bout de 10 s : on le dit (les essais continuent).
     setTimeout(() => !anyUp && this.onStatus('erreur', 'Serveur de jeu injoignable, nouvel essai…'), 10000);
     this.timer = setInterval(() => this.tick(), PING_EVERY);
-    this.startPeer();
   }
 
   ping() {
@@ -94,7 +87,6 @@ export class Net {
     this.ping();
     if (this.partner && !this.connected) {
       this.partner = null;
-      this.closeCall();
       this.onStatus('perdu');
     }
   }
@@ -103,7 +95,7 @@ export class Net {
     if (!this.topic) return;
     const data = JSON.stringify({ ...msg, from: this.id, seq: ++this.seq, to: this.partner });
     // L'état continu (15×/s) en QoS 0 ; les événements en QoS 1 pour ne pas les perdre.
-    const qos = msg.t === 'st' || msg.t === 'ping' ? 0 : 1;
+    const qos = msg.t === 'st' || msg.t === 'ping' || msg.t === 'v' ? 0 : 1;
     for (const c of this.clients) if (c.connected) c.publish(this.topic, data, { qos });
   }
 
@@ -126,81 +118,16 @@ export class Net {
       const fresh = this.partner !== m.from;
       this.partner = m.from;
       this.partnerSeen = Date.now();
-      this.lastSt = 0;
-      if (fresh) {
-        this.voiceGaveUp = false;
-        this.onStatus('connecte');
-        this.callPartner();
-      }
+      this.lastSeq = {};
+      if (fresh) this.onStatus('connecte');
     }
     if (m.from !== this.partner) return;
     this.partnerSeen = Date.now();
     if (m.t === 'ping') return;
-    if (m.t === 'st') {
-      if (m.seq < this.lastSt) return; // arrivé en retard par l'autre serveur
-      this.lastSt = m.seq;
+    if (m.t === 'st' || m.t === 'v') {
+      if (m.seq < (this.lastSeq[m.t] || 0)) return; // arrivé en retard par l'autre serveur
+      this.lastSeq[m.t] = m.seq;
     }
     this.onMessage(m);
-  }
-
-  // ---- Voix (WebRTC direct)
-  setLocalAudio(stream) {
-    this.localAudio = stream;
-    const track = stream?.getAudioTracks()[0];
-    const pc = this.call?.peerConnection;
-    if (track && pc) for (const s of pc.getSenders()) if (!s.track || s.track.kind === 'audio') s.replaceTrack(track).catch(() => {});
-  }
-
-  startPeer() {
-    if (!window.Peer) return;
-    const peer = (this.peer = new window.Peer(PEER_PREFIX + this.id, { debug: 0 }));
-    peer.on('open', () => this.callPartner());
-    peer.on('call', (call) => {
-      call.answer(this.localAudio || undefined);
-      this.useCall(call);
-    });
-    peer.on('disconnected', () => setTimeout(() => !peer.destroyed && peer.reconnect(), 2000));
-    peer.on('error', (err) => {
-      // L'autre n'est pas encore inscrit : on rappellera.
-      if (err.type === 'peer-unavailable') setTimeout(() => this.callPartner(), 3000);
-    });
-  }
-
-  callPartner() {
-    if (!this.isHost || !this.peer?.open || !this.localAudio || this.call || this.voiceGaveUp) return;
-    this.useCall(this.peer.call(PEER_PREFIX + this.partner, this.localAudio));
-  }
-
-  useCall(call) {
-    if (!call) return;
-    if (this.call && this.call !== call) this.closeCall();
-    this.call = call;
-    let ok = false;
-    call.on('stream', (stream) => {
-      ok = true;
-      this.onRemoteAudio(stream);
-      this.onVoice(true);
-    });
-    call.on('close', () => {
-      if (this.call === call) this.call = null;
-    });
-    call.on('error', () => {
-      if (this.call === call) this.call = null;
-    });
-    // Rien au bout de 15 s : les deux réseaux ne se laissent pas relier directement.
-    setTimeout(() => {
-      if (!ok && this.call === call) {
-        this.voiceGaveUp = true; // un seul essai par adversaire : pas de message répété
-        this.onVoice(false);
-        this.closeCall();
-      }
-    }, 15000);
-  }
-
-  closeCall() {
-    try {
-      this.call?.close();
-    } catch {}
-    this.call = null;
   }
 }

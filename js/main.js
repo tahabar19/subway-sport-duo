@@ -2,6 +2,7 @@
 import { Game } from './game.js';
 import { MotionDetector, DEFAULTS } from './motion.js';
 import { Net, newCode, cleanCode } from './net.js';
+import { Voice, opusSupported } from './voice.js';
 import { PoseLandmarker, FilesetResolver } from '../vendor/vision_bundle.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -94,29 +95,18 @@ function toast(text, secs = 2.6) {
 const oppName = () => opp?.name || 'Ton adversaire';
 const cleanName = (s) => String(s || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 14);
 
-// ---- Micro : on envoie toujours un flux audio (silence si micro coupé),
-// pour pouvoir activer le micro en pleine partie sans recréer l'appel.
-let micStream = null, silentStream = null;
-function silence() {
-  silentStream ??= audioCtx().createMediaStreamDestination().stream;
-  return silentStream;
-}
+// ---- Voix : passe par le même relais que le jeu (voice.js)
+let voice = null;
+let opusOk = false;
+opusSupported().then((ok) => (opusOk = ok));
 async function applyMic() {
-  if (me.mic) {
-    try {
-      micStream ??= await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
-      micStream.getAudioTracks().forEach((t) => (t.enabled = true));
-      net.setLocalAudio(micStream);
-    } catch {
-      me.mic = false;
-      toast('Micro refusé ou introuvable');
-    }
-  }
-  if (!me.mic) {
-    micStream?.getAudioTracks().forEach((t) => (t.enabled = false));
-    net.setLocalAudio(silence());
+  voice ??= new Voice(audioCtx(), (msg) => net.connected && net.send(msg));
+  try {
+    await voice.setMic(me.mic);
+  } catch {
+    me.mic = false;
+    voice.setMic(false);
+    toast('Micro refusé ou introuvable');
   }
   $('micBtn').textContent = me.mic ? '🎤 Micro activé' : '🔇 Micro coupé';
   $('micBtn').classList.toggle('live', me.mic);
@@ -130,11 +120,6 @@ function toggleMic() {
 $('micBtn').addEventListener('click', toggleMic);
 
 // ---- Liaison avec l'adversaire
-net.onRemoteAudio = (stream) => {
-  const a = $('remote');
-  a.srcObject = stream;
-  a.play().catch(() => {});
-};
 net.onStatus = (s, detail) => {
   const room = $('room');
   room.classList.add('on');
@@ -156,10 +141,11 @@ net.onStatus = (s, detail) => {
   }
 };
 
-net.onVoice = (ok) => toast(ok ? '🔊 Voix reliée' : '🔇 La voix ne passe pas entre vos deux réseaux (le jeu, si)', ok ? 2 : 5);
-
 net.onMessage = (m) => {
+  if (m.t === 'v') return void voice?.receive(m);
   if (m.t === 'hello') {
+    // Opus si les deux navigateurs savent le faire, sinon son de téléphone.
+    voice?.setOpus(opusOk && m.op === true);
     const fresh = !opp;
     opp = { phase: 'ready', st: null, final: null, alive: true, ...opp };
     opp.name = cleanName(m.name) || 'Adversaire';
@@ -203,7 +189,7 @@ net.onMessage = (m) => {
 };
 
 function sendHello() {
-  net.send({ t: 'hello', name: me.name, char: me.char, mic: me.mic, phase, have: !!opp });
+  net.send({ t: 'hello', name: me.name, char: me.char, mic: me.mic, phase, have: !!opp, op: opusOk });
 }
 
 function sendPhase() {
@@ -497,7 +483,8 @@ function updateHud(t) {
     $('oppGap').textContent = '';
     box.classList.remove('out');
   } else {
-    $('oppWho').textContent = `${opp.mic ? '🎤 ' : '🔇 '}${opp.name} ${EMOJI[opp.char]}`;
+    $('oppWho').textContent = `${voice?.remoteTalking ? '🗣️ ' : opp.mic ? '🎤 ' : '🔇 '}${opp.name} ${EMOJI[opp.char]}`;
+    $('micBtn').classList.toggle('talk', !!voice?.talking);
     $('oppScore').textContent = oppScoreNow();
     const lives = opp.final !== null ? 0 : (opp.st?.lives ?? 3);
     $('oppLives').textContent = '❤'.repeat(lives);
@@ -618,7 +605,7 @@ function frame() {
   requestAnimationFrame(frame);
 }
 
-window.duo = { game, net, get phase() { return phase; } }; // pour le débogage dans la console
+window.duo = { game, net, get phase() { return phase; }, get voice() { return voice; } }; // pour le débogage dans la console
 setPhase('lobby');
 // ?sanscamera : pour tester à deux sur un même PC, au clavier.
 if (!params.has('sanscamera')) initCamera();
