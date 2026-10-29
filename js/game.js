@@ -184,7 +184,7 @@ export class Game {
     this.rollLeft = 0;
     this.distance = 0;
     this.coinCount = 0;
-    this.lives = 3;
+    this.lives = this.maxLives || 3;
     this.invincible = 0;
     this.shake = 0;
     this.run = 0; // 0 = à l'arrêt, 1 = pleine vitesse
@@ -197,7 +197,8 @@ export class Game {
     this.runPhase = 0;
   }
 
-  start(seed) {
+  start(seed, lives = 3) {
+    this.maxLives = Math.max(1, Math.min(10, lives | 0));
     this.resetRun(seed);
     this.state = 'play';
   }
@@ -279,8 +280,14 @@ export class Game {
     }
   }
 
+  // La rangée apparaît pile au mètre prévu : on tient compte de ce qu'on a dépassé (over),
+  // et la difficulté se calcule sur ce mètre-là. Ainsi le parcours est identique chez les
+  // deux joueurs, quelle que soit la fluidité de leur ordinateur.
   spawnRow() {
-    const level = Math.min(1, this.distance / 900); // 0 = début facile, 1 = difficulté max
+    const over = Math.max(0, -this.nextRow);
+    const at = this.distance - over;
+    const z0 = SPAWN_Z + over;
+    const level = Math.min(1, at / 900); // 0 = début facile, 1 = difficulté max
     const pick = () => {
       const r = this.rand();
       if (r < 0.34 - 0.14 * level) return 'empty';
@@ -298,20 +305,20 @@ export class Game {
       row = row.map((t) => (t === 'empty' ? t : first));
       if (!row.includes('empty')) row[(this.rand() * 3) | 0] = 'empty';
     }
-    row.forEach((type, i) => type !== 'empty' && this.addObstacle(type, i - 1, SPAWN_Z));
+    row.forEach((type, i) => type !== 'empty' && this.addObstacle(type, i - 1, z0));
 
     // Des pièces sur une voie franchissable.
     const open = [0, 1, 2].filter((i) => row[i] !== 'train');
     const i = open[(this.rand() * open.length) | 0];
-    if (row[i] === 'low') this.addCoins(i - 1, SPAWN_Z + 3.2, 5, true);
-    else if (row[i] === 'empty') this.addCoins(i - 1, SPAWN_Z + 4, 5, false);
+    if (row[i] === 'low') this.addCoins(i - 1, z0 + 3.2, 5, true);
+    else if (row[i] === 'empty') this.addCoins(i - 1, z0 + 4, 5, false);
 
     const gapTime = 2.3 - 0.7 * level; // secondes entre deux rangées, à vitesse de course
-    this.nextRow = Math.max(this.speedMax() * gapTime, 20) + (row.includes('train') ? TRAIN_LEN : 0);
+    this.nextRow = -over + Math.max(this.speedMax(at) * gapTime, 20) + (row.includes('train') ? TRAIN_LEN : 0);
   }
 
-  speedMax() {
-    return 12 + Math.min(12, this.distance / 150);
+  speedMax(at = this.distance) {
+    return 12 + Math.min(12, at / 150);
   }
 
   // ---- Boucle
@@ -331,7 +338,6 @@ export class Game {
     this.scroll += dz;
 
     this.nextRow -= dz;
-    if (this.nextRow <= 0) this.spawnRow();
 
     // Joueur
     this.px += (this.lane * LANE_W - this.px) * (1 - Math.exp(-dt / 0.07));
@@ -390,12 +396,63 @@ export class Game {
         this.onEvent('coin');
       }
     }
+    // Après avoir avancé le reste : une rangée neuve est déjà à sa place exacte.
+    if (this.nextRow <= 0) this.spawnRow();
     const gone = (o) => o.mesh.position.z - (o.len || 0) / 2 > DESPAWN_Z || o.taken;
     for (const list of [this.obstacles, this.coins])
       for (const o of list) if (gone(o)) this.scene.remove(o.mesh);
     this.obstacles = this.obstacles.filter((o) => !gone(o));
     this.coins = this.coins.filter((o) => !gone(o));
 
+    for (const b of this.buildings) {
+      b.position.z += dz;
+      if (b.position.z - b.userData.d / 2 > DESPAWN_Z + 10) b.position.z -= b.userData.span;
+    }
+  }
+
+  // ---- Mode spectateur : rejoue la course de l'adversaire sur le même parcours (même graine).
+  watchStart(seed, kind) {
+    this.resetRun(seed);
+    this.state = 'watch';
+    this.setCharacter(kind);
+  }
+
+  // s = dernier état reçu de l'adversaire (distance prévue, voie, hauteur, roulade…)
+  watchTo(s, dt) {
+    let dz = Math.max(0, s.dist - this.distance);
+    while (dz > 40) {
+      // Rattrapage d'un coup en entrant en mode spectateur : le monde se construit mètre par mètre.
+      this.advance(1.5, 0);
+      dz -= 1.5;
+    }
+    this.advance(Math.min(dz, Math.max(dz * (1 - Math.exp(-dt / 0.12)), (s.speed || 0) * dt)), dt);
+    this.clock += dt;
+    this.lane = s.lane;
+    this.px += (s.lane * LANE_W - this.px) * (1 - Math.exp(-dt / 0.07));
+    this.py += ((s.py || 0) - this.py) * (1 - Math.exp(-dt / 0.05));
+    this.rollLeft = s.roll ? 0.1 : 0;
+    this.run = s.run || 0;
+    this.speed = s.speed || 0;
+    this.invincible = s.hurt ? 0.2 : 0;
+  }
+
+  // Fait défiler le monde de dz mètres, sans collisions (mode spectateur).
+  advance(dz, dt) {
+    this.distance += dz;
+    this.scroll += dz;
+    this.nextRow -= dz;
+    for (const o of this.obstacles) o.mesh.position.z += dz;
+    for (const c of this.coins) {
+      c.mesh.position.z += dz;
+      c.mesh.rotation.z += dt * 5;
+      const p = c.mesh.position;
+      if (Math.abs(p.z) < 0.7 && Math.abs(p.x - this.px) < 0.9 && Math.abs(p.y - this.py - 1.1) < 1.1) c.taken = true;
+    }
+    if (this.nextRow <= 0) this.spawnRow();
+    const gone = (o) => o.mesh.position.z - (o.len || 0) / 2 > DESPAWN_Z || o.taken;
+    for (const list of [this.obstacles, this.coins]) for (const o of list) if (gone(o)) this.scene.remove(o.mesh);
+    this.obstacles = this.obstacles.filter((o) => !gone(o));
+    this.coins = this.coins.filter((o) => !gone(o));
     for (const b of this.buildings) {
       b.position.z += dz;
       if (b.position.z - b.userData.d / 2 > DESPAWN_Z + 10) b.position.z -= b.userData.span;
@@ -416,7 +473,7 @@ export class Game {
     // Personnage
     const rolling = this.rollLeft > 0;
     const air = this.py > 0.05;
-    this.runPhase += dt * (4 + this.speed * 0.6) * (this.state === 'play' ? this.run : 0);
+    this.runPhase += dt * (4 + this.speed * 0.6) * (this.state === 'play' || this.state === 'watch' ? this.run : 0);
     const bob = poseCharacter(this.me, this.runPhase, this.run, air, rolling, dt);
     this.player.position.set(this.px, this.py + bob, 0);
     this.player.rotation.z = (this.lane * LANE_W - this.px) * -0.12;

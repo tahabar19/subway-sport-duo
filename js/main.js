@@ -1,8 +1,8 @@
 // Subway Sport Duo : caméra -> pose -> détecteur -> jeu, plus la liaison avec l'autre joueur.
-import { Game } from './game.js?v=4';
-import { MotionDetector, DEFAULTS } from './motion.js?v=4';
-import { Net, newCode, cleanCode } from './net.js?v=4';
-import { Voice, opusSupported } from './voice.js?v=4';
+import { Game } from './game.js?v=5';
+import { MotionDetector, DEFAULTS } from './motion.js?v=5';
+import { Net, newCode, cleanCode } from './net.js?v=5';
+import { Voice, opusSupported } from './voice.js?v=5';
 import { PoseLandmarker, FilesetResolver } from '../vendor/vision_bundle.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -54,6 +54,10 @@ let seed = 0;
 let solo = false; // partie lancée sans adversaire
 let lastSend = 0;
 let resultCounted = false;
+let isCreator = false; // celui qui a créé la partie choisit le nombre de cœurs
+let lives = Math.max(1, Math.min(10, Number(load('subway-duo-lives', 3)) || 3));
+let myFinal = 0; // mon score à l'élimination (le jeu rejoue ensuite la course de l'autre)
+const clampLives = (n) => (Number.isFinite(Number(n)) ? Math.max(1, Math.min(10, Math.round(Number(n)))) : 3);
 
 // ---- Sons
 let audio = null;
@@ -157,6 +161,7 @@ net.onMessage = (m) => {
       toast(`${EMOJI[opp.char]} ${opp.name} est là !`);
       beep(660, 0.12, 'triangle', 0.08);
     }
+    if (m.cr === true && !isCreator) setLives(m.lives, false);
     // On répond si l'autre n'a pas encore notre fiche.
     if (fresh || !m.have) sendHello();
     return;
@@ -166,17 +171,20 @@ net.onMessage = (m) => {
     opp.phase = String(m.phase);
     if (m.phase === 'waiting' && phase !== 'play') toast(`${oppName()} est prêt(e) ✅`);
   } else if (m.t === 'mic') opp.mic = !!m.on;
+  else if (m.t === 'lives' && !isCreator) setLives(m.n, false);
   else if (m.t === 'st') {
     const n = (v) => (Number.isFinite(v) ? v : 0);
     opp.st = {
       lane: Math.max(-1, Math.min(1, Math.round(n(m.lane)))),
       py: Math.max(0, Math.min(4, n(m.py))),
       roll: !!m.roll, run: Math.max(0, Math.min(2, n(m.run))), speed: n(m.speed),
-      dist: n(m.dist), score: Math.max(0, Math.round(n(m.score))), lives: Math.max(0, Math.min(3, n(m.lives))),
+      dist: n(m.dist), score: Math.max(0, Math.round(n(m.score))), lives: Math.max(0, Math.min(10, n(m.lives))),
       alive: !!m.alive, hurt: !!m.hurt,
     };
+    opp.stAt = now();
   } else if (m.t === 'hit') {
     toast(`💥 ${oppName()} ${m.what === 'train' ? "s'est pris un train" : "s'est cogné(e)"} !`);
+    if (phase === 'watch') (game.shake = 0.35, beep(110, 0.3, 'sawtooth', 0.06));
   } else if (m.t === 'over') {
     const wasOver = opp.final !== null;
     opp.final = Math.max(0, Math.round(Number(m.score) || 0));
@@ -184,13 +192,34 @@ net.onMessage = (m) => {
     if (phase === 'play' && !wasOver) toast(`☠️ ${oppName()} est éliminé(e) avec ${opp.final} — dépasse ce score !`, 4);
   } else if (m.t === 'start' && !net.isHost) {
     // L'hôte donne le départ, avec la graine du parcours commun.
-    if (phase === 'waiting' || phase === 'over' || phase === 'ready') startCountdown(Number(m.seed) >>> 0);
+    if (phase === 'waiting' || phase === 'over' || phase === 'ready') {
+      if (m.lives) setLives(m.lives, false);
+      startCountdown(Number(m.seed) >>> 0);
+    }
   }
 };
 
 function sendHello() {
-  net.send({ t: 'hello', name: me.name, char: me.char, mic: me.mic, phase, have: !!opp, op: opusOk });
+  net.send({ t: 'hello', name: me.name, char: me.char, mic: me.mic, phase, have: !!opp, op: opusOk, cr: isCreator, lives });
 }
+
+// Nombre de cœurs : réglé par le créateur de la partie, le même pour les deux.
+function setLives(n, mine = true) {
+  lives = clampLives(n);
+  if (mine) {
+    store('subway-duo-lives', lives);
+    net.send({ t: 'lives', n: lives });
+  }
+  renderLives();
+}
+function renderLives() {
+  $('livesVal').textContent = lives;
+  $('livesLobbyVal').textContent = lives;
+  $('livesRow').classList.toggle('mine', isCreator);
+  $('livesWho').textContent = isCreator || !opp ? '' : ` (choisi par ${opp.name})`;
+}
+for (const [id, d] of [['livesMinus', -1], ['livesPlus', 1], ['livesLobbyMinus', -1], ['livesLobbyPlus', 1]])
+  $(id).addEventListener('click', () => (isCreator || phase === 'lobby') && setLives(lives + d));
 
 function sendPhase() {
   net.send({ t: 'phase', phase });
@@ -202,7 +231,9 @@ function setPhase(p) {
   phaseStart = now();
   holdTime = 0;
   $('lobby').classList.toggle('hidden', p !== 'lobby' && p !== 'loading');
-  $('panel').classList.toggle('hidden', p === 'play' || p === 'lobby' || p === 'loading');
+  $('panel').classList.toggle('hidden', p === 'play' || p === 'watch' || p === 'lobby' || p === 'loading');
+  $('livesRow').style.display = p === 'ready' || p === 'waiting' || p === 'over' ? '' : 'none';
+  $('watch').classList.toggle('on', p === 'watch');
   $('moves').style.display = p === 'ready' || p === 'calib' ? '' : 'none';
   $('msg').classList.toggle('big', p === 'countdown');
   if (p === 'calib') detector.startCalibration();
@@ -215,9 +246,12 @@ function setPhase(p) {
       opp.alive = true;
       opp.st = null;
     }
-    game.start(seed);
+    game.setCharacter(me.char);
+    game.start(seed, lives);
     beep(880, 0.2, 'triangle', 0.08);
   }
+  if (p === 'watch') game.watchStart(seed, opp.char); // on suit l'adversaire sur le même parcours
+  renderLives();
   sendPhase();
 }
 
@@ -271,7 +305,8 @@ $('lobbyForm').addEventListener('submit', async (e) => {
   $('lobbyErr').textContent = '';
   audioCtx(); // débloque le son (il faut un clic)
   await applyMic();
-  if (act === 'host' && !linkCode) net.host(code);
+  isCreator = act === 'host' && !linkCode;
+  if (isCreator) net.host(code);
   else net.join(code);
   const link = location.origin + location.pathname + '?salle=' + code;
   history.replaceState(null, '', link);
@@ -388,7 +423,7 @@ const oppScoreNow = () => opp?.final ?? opp?.st?.score ?? 0;
 const oppAlive = () => !!opp && opp.alive && opp.phase === 'play';
 
 function resultText() {
-  const a = game.score, b = oppScoreNow();
+  const a = myFinal, b = oppScoreNow();
   if (!opp || solo) return `Score ${a} · record ${game.best}`;
   if (oppAlive()) return `Éliminé(e) avec ${a}.\n${EMOJI[opp.char]} ${opp.name} court encore : ${b}…`;
   if (!resultCounted) {
@@ -446,9 +481,12 @@ function updatePanel(dt, t) {
     // L'hôte donne le départ quand les deux sont prêts.
     if (net.isHost && opp && net.connected && opp.phase === 'waiting') {
       const s = (Math.random() * 2 ** 32) >>> 0;
-      net.send({ t: 'start', seed: s });
+      net.send({ t: 'start', seed: s, lives });
       startCountdown(s);
     }
+  } else if (phase === 'watch') {
+    // Spectateur jusqu'à l'élimination de l'adversaire (ou sa déconnexion).
+    if (!oppAlive()) setPhase('over');
   } else if (phase === 'countdown') {
     const left = COUNTDOWN - (t - phaseStart);
     const n = Math.ceil(left);
@@ -461,12 +499,14 @@ function updatePanel(dt, t) {
 
 function updateHud(t) {
   $('meWho').textContent = `${EMOJI[me.char]} ${me.name || 'Moi'}`;
-  $('score').textContent = game.score;
-  $('sub').textContent = `🪙 ${game.coinCount} · record ${Math.max(game.best, game.score)}`;
-  $('speed').textContent = `⚡ ${Math.round(game.speed * 3.6)} km/h`;
+  const done = phase === 'watch' || phase === 'over';
+  $('score').textContent = done ? myFinal : game.score;
+  $('sub').textContent = done ? `record ${game.best}` : `🪙 ${game.coinCount} · record ${Math.max(game.best, game.score)}`;
+  $('speed').textContent = done ? '☠️ éliminé(e)' : `⚡ ${Math.round(game.speed * 3.6)} km/h`;
   const a = game.run;
-  $('speed').style.color = a < 0.75 ? '#ffffff' : a < 0.95 ? '#4be37a' : a < 1.2 ? '#ff9f1a' : '#ff3b30';
-  $('lives').textContent = '❤'.repeat(Math.max(0, game.lives));
+  $('speed').style.color = done || a < 0.75 ? '#ffffff' : a < 0.95 ? '#4be37a' : a < 1.2 ? '#ff9f1a' : '#ff3b30';
+  $('lives').textContent = done ? '' : '❤'.repeat(Math.max(0, game.lives));
+  if (phase === 'watch' && opp) $('watchText').textContent = `👀 Tu regardes ${opp.name} · ${oppScoreNow()} — toi : ${myFinal}`;
   const stopped = phase === 'play' && !keyboard && t - lastActivity > RUN_TIMEOUT;
   $('hint').textContent = measure ? 'Sautille pour avancer !' : 'Je ne te vois plus — reviens dans le cadre';
   $('hint').classList.toggle('on', stopped);
@@ -486,8 +526,7 @@ function updateHud(t) {
     $('oppWho').textContent = `${voice?.remoteTalking ? '🗣️ ' : opp.mic ? '🎤 ' : '🔇 '}${opp.name} ${EMOJI[opp.char]}`;
     $('micBtn').classList.toggle('talk', !!voice?.talking);
     $('oppScore').textContent = oppScoreNow();
-    const lives = opp.final !== null ? 0 : (opp.st?.lives ?? 3);
-    $('oppLives').textContent = '❤'.repeat(lives);
+    $('oppLives').textContent = '❤'.repeat(opp.final !== null ? 0 : (opp.st?.lives ?? lives));
     $('oppState').textContent =
       { ready: 'Se prépare', calib: 'Calibrage…', waiting: 'Prêt(e) ✅', countdown: 'Départ…', play: 'En course 🏃', over: 'Éliminé(e)', lobby: 'Accueil' }[opp.phase] || '';
     box.classList.toggle('out', opp.final !== null && phase === 'play');
@@ -523,8 +562,9 @@ function sendState(t) {
     lastSlow = t;
     if (!opp) sendHello();
     sendPhase();
-    if (phase === 'over') net.send({ t: 'over', score: game.score });
-    if (phase === 'countdown' && net.isHost && t - phaseStart < 1.2) net.send({ t: 'start', seed });
+    if (phase === 'over' || phase === 'watch') net.send({ t: 'over', score: myFinal });
+    if (phase === 'countdown' && net.isHost && t - phaseStart < 1.2) net.send({ t: 'start', seed, lives });
+    if (isCreator && (phase === 'ready' || phase === 'waiting' || phase === 'over')) net.send({ t: 'lives', n: lives });
   }
   if (t - lastSend < SEND_EVERY) return;
   lastSend = t;
@@ -543,8 +583,10 @@ game.onEvent = (e, info) => {
   else if (e === 'roll') beep(260, 0.12, 'sine', 0.08);
   else if (e === 'hit') (beep(110, 0.3, 'sawtooth', 0.1), net.send({ t: 'hit', what: info }));
   else if (e === 'over') {
-    net.send({ t: 'over', score: game.score });
-    setPhase('over');
+    myFinal = game.score;
+    net.send({ t: 'over', score: myFinal });
+    // L'adversaire court encore : on le regarde jouer. Sinon, résultat.
+    setPhase(!solo && oppAlive() && opp.st ? 'watch' : 'over');
   }
 };
 
@@ -599,6 +641,11 @@ function frame() {
   if (phase !== 'play') updatePanel(dt, t);
   game.setRunning(phase === 'play' && (keyboard || t - lastActivity < RUN_TIMEOUT));
   game.setPace(keyboard ? 1 : Math.min(PACE_MAX, Math.max(PACE_MIN, 1 + PACE_PER_HOP * (cadence - CADENCE_NORMAL))));
+  if (phase === 'watch' && opp?.st) {
+    // L'état arrive 12×/s : on prévoit la distance entre deux messages.
+    const ahead = Math.min(0.3, t - (opp.stAt || t)) * opp.st.speed;
+    game.watchTo({ ...opp.st, dist: opp.st.dist + ahead }, dt);
+  }
   game.update(dt);
   updateHud(t);
   sendState(t);

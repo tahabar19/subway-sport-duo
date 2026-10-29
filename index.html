@@ -69,6 +69,14 @@
   #moves div { background: rgba(255,255,255,.12); border-radius: 12px; padding: 12px 8px; font-size: 16px; }
   #moves b { display: block; font-size: 30px; margin-bottom: 4px; }
   #keys { margin-top: 18px; font-size: 14px; opacity: .75; }
+  .stepper { display: flex; align-items: center; justify-content: center; gap: 18px; font-size: 22px; font-weight: 800; }
+  .stepper .choice, #livesRow .choice { width: 52px; padding: 6px 0; font-size: 24px; }
+  #livesRow { display: flex; align-items: center; justify-content: center; gap: 14px; font-size: 22px; font-weight: 800; margin: 8px 0 0; }
+  #livesRow .choice { display: none; }
+  #livesRow.mine .choice { display: block; }
+  #watch { position: fixed; left: 50%; bottom: 7%; transform: translateX(-50%); font-size: 26px; font-weight: 800;
+    background: rgba(12,22,44,.55); padding: 10px 22px; border-radius: 16px; display: none; z-index: 3; white-space: nowrap; }
+  #watch.on { display: block; }
   #share { margin: 6px auto 0; font-size: 17px; display: none; }
   #share.on { display: block; }
 
@@ -144,6 +152,7 @@
 <div id="action" class="shadowed"></div>
 <div id="hint" class="shadowed">Sautille pour avancer !</div>
 <button id="micBtn" type="button">🔇 Micro coupé</button>
+<div id="watch" class="shadowed"><span id="watchText"></span></div>
 
 <!-- Accueil : prénom, personnage, micro, créer ou rejoindre -->
 <div id="lobby" class="overlay">
@@ -169,6 +178,14 @@
       </div>
     </div>
     <div id="hostOrJoin">
+      <div class="field">
+        <span class="lab">Nombre de cœurs (pour vous deux)</span>
+        <div class="stepper">
+          <button type="button" class="choice" id="livesLobbyMinus" aria-label="Moins de cœurs">−</button>
+          <span>❤ × <b id="livesLobbyVal">3</b></span>
+          <button type="button" class="choice" id="livesLobbyPlus" aria-label="Plus de cœurs">+</button>
+        </div>
+      </div>
       <button class="btn" type="submit" data-act="host">Créer une partie</button>
       <div class="or">ou rejoindre avec un code</div>
       <div class="row">
@@ -188,6 +205,11 @@
   <div id="card" class="shadowed">
     <h1 class="title">SUBWAY <span>DUO</span></h1>
     <div id="share"></div>
+    <div id="livesRow">
+      <button type="button" class="choice" id="livesMinus" aria-label="Moins de cœurs">−</button>
+      <span>❤ × <b id="livesVal">3</b><span id="livesWho"></span></span>
+      <button type="button" class="choice" id="livesPlus" aria-label="Plus de cœurs">+</button>
+    </div>
     <div id="msg">Chargement…</div>
     <div id="bar"><i></i></div>
     <div id="moves">
@@ -220,7 +242,7 @@
 </div>
 <video id="video" playsinline muted></video>
 
-<script src="vendor/mqtt.min.js?v=4"></script>
-<script type="module" src="js/main.js?v=4"></script>
+<script src="vendor/mqtt.min.js?v=5"></script>
+<script type="module" src="js/main.js?v=5"></script>
 </body>
 </html>
