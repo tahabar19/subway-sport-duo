@@ -1,6 +1,8 @@
 // Le jeu lui-même : piste à 3 voies, obstacles, pièces, personnage (Three.js).
 // Il ne sait rien de la caméra : on le pilote avec setLane / jump / roll / setRunning.
 import * as THREE from '../vendor/three.module.js';
+import { clone as cloneSkinned } from '../vendor/addons/utils/SkeletonUtils.js';
+import { buildCartoonCity, toon, OUTLINE, addOutline, TOON } from './cartoon.js?v=10';
 
 const LANE_W = 2.4;
 const SPAWN_Z = -120;
@@ -16,6 +18,40 @@ const HIGH_Y = 1.25; // dessous de la barrière haute : passer en roulade
 const TRAIN_LEN = 14;
 const SLEEPER_GAP = 2;
 const N_SLEEPERS = 70;
+const BASE_FOV = 54;
+const FOV_BOOST = 8; // degrés de champ en plus à pleine vitesse : on sent mieux la vitesse
+// Sensations (skill game-feel) : « trauma » qui décroît, tremblement = trauma² (doux pour les
+// petits chocs, fort pour les gros), mini-gel du jeu au moment du choc.
+const TRAUMA_DECAY = 1.4; // par seconde réelle
+const HIT_STOP = { low: 0.07, high: 0.07, train: 0.12 }; // secondes réelles
+const HIT_TRAUMA = { low: 0.55, high: 0.55, train: 0.85 };
+const POP_TIME = 0.22; // pièce ramassée : grossit puis disparaît
+const CHAR_SCALE = 1.25; // modèles de 1,8 m → même taille que l'ancien personnage (~2,1 m)
+
+// Modèles 3D chargés par assets.js (null = on garde les cubes d'origine).
+let ASSETS = null;
+const BAKED = toon(0xffffff, { vertexColors: true });
+// Portique : bandes jaunes et noires de chantier.
+const STRIPES = (() => {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ffc93c';
+  g.fillRect(0, 0, 256, 64);
+  g.fillStyle = '#1f1b24';
+  for (let x = -64; x < 256; x += 48) {
+    g.beginPath();
+    g.moveTo(x, 64);
+    g.lineTo(x + 24, 64);
+    g.lineTo(x + 88, 0);
+    g.lineTo(x + 64, 0);
+    g.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+})();
 
 // Générateur pseudo-aléatoire à graine (mulberry32) : même graine = même parcours.
 export function seeded(seed) {
@@ -30,7 +66,7 @@ export function seeded(seed) {
 }
 
 const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
-const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, ...opts });
+const mat = (color, opts = {}) => toon(color, opts); // ombrage cartoon partout
 
 const GEO = {
   lowBar: box(2.0, 0.22, 0.25),
@@ -41,6 +77,7 @@ const GEO = {
   trainFront: box(1.7, 1.0, 0.1),
   trainStripe: box(2.04, 0.35, TRAIN_LEN + 0.02),
   coin: new THREE.CylinderGeometry(0.32, 0.32, 0.08, 16),
+  headlight: new THREE.CircleGeometry(0.2, 16),
 };
 const MAT = {
   red: mat(0xe5392f),
@@ -48,29 +85,50 @@ const MAT = {
   yellow: mat(0xffc400),
   dark: mat(0x2b2f3a),
   glass: mat(0x9fe3ff),
-  coin: new THREE.MeshLambertMaterial({ color: 0xffd21f, emissive: 0x7a5200 }),
+  coin: toon(0xffd21f, { emissive: 0x7a4a00, emissiveIntensity: 0.6 }),
+  stripes: toon(0xffffff, { map: STRIPES }),
+  headlight: new THREE.MeshBasicMaterial({ color: 0xfff6c8 }),
   trains: [mat(0x2f7de1), mat(0x1fae6b), mat(0xd9552b), mat(0x8a4fd3)],
 };
 
 export class Game {
-  constructor(canvas) {
+  constructor(canvas, assets = null) {
+    ASSETS = assets;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x8fd3ff);
-    this.scene.fog = new THREE.Fog(0x8fd3ff, 45, 125);
-    this.camera = new THREE.PerspectiveCamera(54, 1, 0.1, 200);
-
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x6b7a8c, 1.9));
-    const sun = new THREE.DirectionalLight(0xfff1d6, 1.6);
-    sun.position.set(-6, 12, 6);
-    this.scene.add(sun);
+    // MediaPipe tourne en même temps sur la même machine : 1,5× suffit (2× = 78 % de pixels en plus).
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap; // three r160 : la version douce s'appelle encore ainsi
+    // Pas de courbe de tons : les couleurs cartoon restent vives et franches.
+    this.renderer.toneMapping = THREE.NoToneMapping;
+    this.scene = new THREE.Scene(); // ciel, brouillard, lumière et moment de la journée : voir cartoon.js
+    this.camera = new THREE.PerspectiveCamera(BASE_FOV, 1, 0.1, 200);
+    this.fx = true; // contours noirs (coupés en qualité basse)
+    // Soleil fixe (le monde défile, le joueur reste en z = 0) ; sa couleur et sa force suivent
+    // l'heure (cartoon.js). Son cadre d'ombre couvre les 3 voies de z = +8 à z = -80.
+    const sun = new THREE.DirectionalLight(0xffffff, 2.5);
+    sun.position.set(-12.2, 24.5, -21.8);
+    sun.target.position.set(0, 0, -34);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    Object.assign(sun.shadow.camera, { left: -37, right: 34, bottom: -28, top: 32, near: 6, far: 53 });
+    sun.shadow.bias = -0.0005;
+    sun.shadow.normalBias = 0.02;
+    this.scene.add(sun, sun.target);
+    this.sun = sun;
 
     this.buildWorld();
     this.buildPlayer();
 
     this.obstacles = [];
     this.coins = [];
+    this.pops = []; // pièces ramassées en train de « poper »
+    // Objets réutilisés au lieu d'être recréés à chaque rangée (skill performance : pas d'à-coups).
+    this.pool = { low: [], high: [], train: [], coin: [] };
+    this._m = new THREE.Matrix4();
+    this.shakeStrength = 1; // réglage du joueur, 0 à 1
+    this.trauma = 0;
+    this.hitStop = 0;
     this.best = Number(localStorage.getItem('subway-sport-best') || 0);
     this.onEvent = () => {}; // 'coin' | 'hit' | 'over' | 'jump' | 'roll'
     this.state = 'idle';
@@ -83,48 +141,60 @@ export class Game {
     const w = innerWidth, h = innerHeight;
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
+    // Téléphone en portrait : l'écran est étroit, on recule et on monte la caméra et on élargit
+    // le champ pour voir les 3 voies en entier (0 = écran large, 1 = téléphone en portrait).
+    this.portrait = Math.max(0, Math.min(1, (1.2 - w / h) / 0.7));
+    this.camera.fov = BASE_FOV + 16 * this.portrait;
     this.camera.updateProjectionMatrix();
   }
 
   buildWorld() {
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), mat(0x7fb069));
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.set(0, -0.06, -100);
-    this.scene.add(ground);
-    const bed = new THREE.Mesh(new THREE.PlaneGeometry(LANE_W * 3 + 0.8, 400), mat(0x5a5f6b));
-    bed.rotation.x = -Math.PI / 2;
-    bed.position.set(0, -0.03, -100);
-    this.scene.add(bed);
-
-    // Rails (fixes) et traverses (qui défilent).
-    const railGeo = box(0.09, 0.1, 400);
-    const railMat = mat(0xc9ced6);
-    for (let l = -1; l <= 1; l++)
-      for (const s of [-0.55, 0.55]) {
-        const r = new THREE.Mesh(railGeo, railMat);
-        r.position.set(l * LANE_W + s, 0.03, -100);
-        this.scene.add(r);
-      }
-    this.sleepers = new THREE.InstancedMesh(box(1.5, 0.06, 0.35), mat(0x4a3c31), N_SLEEPERS * 3);
+    this.city = buildCartoonCity(this, { LANE_W, DESPAWN_Z, SPAWN_Z });
+    this.buildings = this.city.rows; // immeubles + murs à graffitis : défilent et se replacent
+    // Traverses (qui défilent)
+    this.sleepers = new THREE.InstancedMesh(box(1.6, 0.1, 0.38), mat(0x7a5236), N_SLEEPERS * 3);
+    this.sleepers.receiveShadow = true;
     this.scene.add(this.sleepers);
     this.scroll = 0;
+  }
 
-    // Immeubles sur les côtés.
-    this.buildings = [];
-    const colors = [0xf2a65a, 0xe76f51, 0x6a8caf, 0xd9c5a0, 0x9d8189, 0x80b192, 0xf4d35e];
-    for (const side of [-1, 1]) {
-      let z = DESPAWN_Z;
-      while (z > SPAWN_Z - 30) {
-        const w = 5 + Math.random() * 4, h = 5 + Math.random() * 13, d = 6 + Math.random() * 7;
-        const b = new THREE.Mesh(box(w, h, d), mat(colors[(Math.random() * colors.length) | 0]));
-        b.position.set(side * (LANE_W * 1.5 + 4.5 + w / 2), h / 2, z - d / 2);
-        b.userData.d = d;
-        this.scene.add(b);
-        this.buildings.push(b);
-        z -= d + 0.6;
-      }
-      // Longueur totale de la rangée : sert à replacer un immeuble sorti au bout de la file.
-      for (const b of this.buildings) b.userData.span ??= DESPAWN_Z - z;
+  // Contours noirs façon dessin animé (un seul matériau partagé).
+  setEffects(on) {
+    this.fx = on;
+    OUTLINE.visible = on;
+  }
+
+  // ---- Qualité : chaque joueur a sa propre carte graphique (jeu en ligne), donc on s'adapte
+  // à SA machine. 3 = contours + ombres, 2 = ombres, 1 = rien de lourd, 0 = en plus 30 % de pixels en moins.
+  setQuality(level, auto = false) {
+    this.quality = level;
+    this.autoQ = auto;
+    this.setEffects(level >= 3);
+    this.setShadows(level >= 2);
+    const pr = Math.min(devicePixelRatio, 1.5) * (level >= 1 ? 1 : 0.7);
+    if (pr !== this.renderer.getPixelRatio()) {
+      this.renderer.setPixelRatio(pr);
+      this.resize();
+    }
+    this.qT = this.qN = 0;
+    this.qSkip = 1; // la fenêtre de mesure suivante contient la recompilation : on l'ignore
+  }
+
+  // Mesure la fluidité par tranches de 2 s, seulement en course (le chargement et l'accueil
+  // faussent la mesure) ; deux tranches d'affilée sous ~48 images/s → on descend d'un cran.
+  autoQuality(realDt) {
+    if (!this.autoQ || this.quality <= 0 || (this.state !== 'play' && this.state !== 'watch')) return;
+    this.qT += realDt;
+    this.qN++;
+    if (this.qT < 2) return;
+    const avg = this.qT / this.qN;
+    this.qT = this.qN = 0;
+    if (this.qSkip > 0) return void this.qSkip--;
+    this.qSlow = avg > 1 / 48 ? (this.qSlow || 0) + 1 : 0;
+    if (this.qSlow >= 2) {
+      this.qSlow = 0;
+      this.setQuality(this.quality - 1, true);
+      this.onEvent('quality', this.quality);
     }
   }
 
@@ -138,6 +208,11 @@ export class Game {
     );
     this.shadow.rotation.x = -Math.PI / 2;
     this.scene.add(this.shadow);
+  }
+
+  // Ombres : ~1,5 ms de plus par image sur un petit GPU (Intel HD 5500), coupables dans les réglages.
+  setShadows(on) {
+    this.sun.castShadow = on; // three recompile ses matériaux une fois, puis saute la passe d'ombre
   }
 
   // 'garcon' ou 'fille'
@@ -173,10 +248,19 @@ export class Game {
 
   resetRun(seed = (Math.random() * 2 ** 32) >>> 0) {
     this.rand = seeded(seed);
-    for (const o of this.obstacles) this.scene.remove(o.mesh);
-    for (const c of this.coins) this.scene.remove(c.mesh);
+    for (const o of this.obstacles) this.release(o.type, o);
+    for (const c of this.coins) this.release('coin', c);
+    for (const p of this.pops) this.release('coin', p);
     this.obstacles = [];
     this.coins = [];
+    this.pops = [];
+    this.trauma = 0;
+    this.hitStop = 0;
+    this.squash = 0; // + = écrasé (atterrissage), − = étiré (impulsion du saut)
+    this.squashV = 0;
+    this.coinStreak = 0;
+    this.lastCoinAt = -1;
+    this.city?.reset(); // chaque partie commence le matin
     this.lane = 0;
     this.px = 0;
     this.py = 0;
@@ -186,7 +270,6 @@ export class Game {
     this.coinCount = 0;
     this.lives = this.maxLives || 3;
     this.invincible = 0;
-    this.shake = 0;
     this.run = 0; // 0 = à l'arrêt, 1 = pleine vitesse
     this.running = false;
     this.pace = 1; // allure demandée par le joueur (1 = normale), voir setPace
@@ -198,6 +281,8 @@ export class Game {
   }
 
   start(seed, lives = 3) {
+    this.qT = this.qN = 0;
+    this.qSkip = 1; // la 1re tranche de course contient les premiers trains (compilation) : ignorée
     this.maxLives = Math.max(1, Math.min(10, lives | 0));
     this.resetRun(seed);
     this.state = 'play';
@@ -230,7 +315,16 @@ export class Game {
     }
     this.vy = JUMP_V;
     this.rollLeft = 0;
+    this.kickSquash(-0.16); // s'étire en décollant
     this.onEvent('jump');
+  }
+  // Choc vu à l'écran (aussi utilisé en mode spectateur quand l'adversaire se cogne).
+  addTrauma(amount) {
+    this.trauma = Math.min(1, this.trauma + amount); // les chocs s'additionnent, sans repartir de zéro
+  }
+  kickSquash(amount) {
+    this.squash = amount;
+    this.squashV = 0;
   }
   roll() {
     if (this.state !== 'play') return;
@@ -239,45 +333,119 @@ export class Game {
     this.onEvent('roll');
   }
 
-  // ---- Génération des obstacles
-  addObstacle(type, lane, z) {
+  // ---- Réserve d'objets : on cache au lieu de supprimer, on ressort au lieu de recréer.
+  release(kind, o) {
+    o.mesh.visible = false;
+    this.pool[kind].push(o);
+  }
+
+  buildObstacle(type) {
     const g = new THREE.Group();
     let len = 0.4;
     const add = (geo, m, x, y, zz = 0) => {
       const mesh = new THREE.Mesh(geo, m);
       mesh.position.set(x, y, zz);
+      mesh.castShadow = true;
       g.add(mesh);
     };
-    if (type === 'low') {
+    if (ASSETS && type === 'low') {
+      const m = ASSETS.barriere.clone();
+      m.scale.set(2.1 / 1.56, 1.1, 1);
+      const parts = [];
+      m.traverse((o) => o.isMesh && parts.push(o)); // d'abord la liste : un contour ajouté serait re-parcouru
+      for (const o of parts) {
+        o.castShadow = true;
+        o.material = toon(0xffffff, { map: o.material.map }); // même texture rayée, ombrage cartoon
+        addOutline(o, 0.03);
+      }
+      g.add(m);
+    } else if (ASSETS && type === 'train') {
+      len = TRAIN_LEN;
+      for (const geo of ASSETS.trains) {
+        // Modèle couché sur x : on le tourne dans le sens des voies et on l'étire à 2 × 3,1 × 14 m.
+        const size = geo.boundingBox.getSize(new THREE.Vector3());
+        const m = new THREE.Mesh(geo, BAKED);
+        m.rotation.y = Math.PI / 2;
+        m.scale.set(TRAIN_LEN / size.x, 3.1 / size.y, 2.05 / size.z);
+        m.castShadow = true;
+        addOutline(m, 0.07);
+        g.add(m);
+      }
+      // Phares (enfants ajoutés après les 3 modèles).
+      for (const x of [-0.6, 0.6]) add(GEO.headlight, MAT.headlight, x, 0.8, TRAIN_LEN / 2 + 0.03);
+    } else if (type === 'low') {
       add(GEO.lowBar, MAT.red, 0, LOW_H - 0.11);
       add(GEO.lowBar, MAT.white, 0, LOW_H - 0.45);
       add(GEO.lowLeg, MAT.dark, -0.9, LOW_H / 2);
       add(GEO.lowLeg, MAT.dark, 0.9, LOW_H / 2);
     } else if (type === 'high') {
-      add(GEO.highBar, MAT.yellow, 0, HIGH_Y + 0.45);
-      add(GEO.highLeg, MAT.dark, -1.0, (HIGH_Y + 0.9) / 2);
-      add(GEO.highLeg, MAT.dark, 1.0, (HIGH_Y + 0.9) / 2);
+      // Portique de chantier à bandes jaunes et noires → « passe dessous ».
+      add(GEO.highBar, MAT.stripes, 0, HIGH_Y + 0.45);
+      add(GEO.highLeg, MAT.red, -1.0, (HIGH_Y + 0.9) / 2);
+      add(GEO.highLeg, MAT.red, 1.0, (HIGH_Y + 0.9) / 2);
+      for (const m of g.children) addOutline(m, 0.04);
     } else {
       len = TRAIN_LEN;
-      add(GEO.train, MAT.trains[(this.rand() * MAT.trains.length) | 0], 0, 1.65);
+      add(GEO.train, MAT.trains[0], 0, 1.65);
       add(GEO.trainStripe, MAT.white, 0, 1.2);
       add(GEO.trainFront, MAT.glass, 0, 2.3, TRAIN_LEN / 2 + 0.01);
     }
-    // z = face avant (côté joueur) de l'obstacle.
-    g.position.set(lane * LANE_W, 0, z - len / 2);
     this.scene.add(g);
-    this.obstacles.push({ type, mesh: g, len, hit: false });
+    return { type, mesh: g, len };
+  }
+
+  // ---- Génération des obstacles
+  addObstacle(type, lane, z) {
+    const o = this.pool[type].pop() || this.buildObstacle(type);
+    // Toujours un tirage pour la couleur du train (même ordre qu'avant) : parcours identique
+    // chez les deux joueurs.
+    if (type === 'train') {
+      const k = (this.rand() * MAT.trains.length) | 0;
+      if (ASSETS) o.mesh.children.forEach((m, i) => (m.visible = i >= ASSETS.trains.length || i === k % ASSETS.trains.length));
+      else o.mesh.children[0].material = MAT.trains[k];
+    }
+    o.hit = false;
+    o.graceUntil = undefined;
+    o.mesh.visible = true;
+    // z = face avant (côté joueur) de l'obstacle.
+    o.mesh.position.set(lane * LANE_W, 0, z - o.len / 2);
+    this.obstacles.push(o);
   }
 
   addCoins(lane, z, n, arc) {
     for (let i = 0; i < n; i++) {
-      const mesh = new THREE.Mesh(GEO.coin, MAT.coin);
-      mesh.rotation.x = Math.PI / 2;
+      let c = this.pool.coin.pop();
+      if (!c) {
+        c = { mesh: new THREE.Mesh(GEO.coin, MAT.coin) };
+        this.scene.add(c.mesh);
+      }
+      c.taken = false;
+      c.t = 0;
+      c.mesh.visible = true;
+      c.mesh.scale.setScalar(1);
+      c.mesh.rotation.set(Math.PI / 2, 0, 0);
       const k = n > 1 ? i / (n - 1) : 0.5;
-      mesh.position.set(lane * LANE_W, arc ? 1.0 + 1.3 * Math.sin(Math.PI * k) : 1.0, z - i * 1.6);
-      this.scene.add(mesh);
-      this.coins.push({ mesh });
+      c.mesh.position.set(lane * LANE_W, arc ? 1.0 + 1.3 * Math.sin(Math.PI * k) : 1.0, z - i * 1.6);
+      this.coins.push(c);
     }
+  }
+
+  // Range ce qui est passé derrière le joueur ; les pièces ramassées partent « poper ».
+  sweep() {
+    const out = (o) => o.mesh.position.z - (o.len || 0) / 2 > DESPAWN_Z;
+    let n = 0;
+    for (const o of this.obstacles) {
+      if (out(o)) this.release(o.type, o);
+      else this.obstacles[n++] = o;
+    }
+    this.obstacles.length = n;
+    n = 0;
+    for (const c of this.coins) {
+      if (c.taken) this.pops.push(c);
+      else if (out(c)) this.release('coin', c);
+      else this.coins[n++] = c;
+    }
+    this.coins.length = n;
   }
 
   // La rangée apparaît pile au mètre prévu : on tient compte de ce qu'on a dépassé (over),
@@ -324,8 +492,16 @@ export class Game {
   // ---- Boucle
   update(dt) {
     this.time = (this.time || 0) + dt;
-    if (this.state === 'play') this.step(dt);
-    this.animate(dt);
+    this.autoQuality(dt);
+    // Mini-gel au choc : le jeu tourne à 5 % pendant hitStop secondes RÉELLES. Le tremblement,
+    // lui, continue en temps réel pour ne pas rester figé de travers.
+    let simDt = dt;
+    if (this.hitStop > 0) {
+      this.hitStop = Math.max(0, this.hitStop - dt);
+      simDt = dt * 0.05;
+    }
+    if (this.state === 'play') this.step(simDt);
+    this.animate(simDt, dt);
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -345,6 +521,7 @@ export class Game {
       this.vy -= GRAVITY * dt;
       this.py = Math.max(0, this.py + this.vy * dt);
       if (this.py === 0) {
+        if (this.vy < -3) this.kickSquash(0.24 * Math.min(1, -this.vy / 12)); // s'écrase à l'atterrissage
         this.vy = 0;
         if (this.clock < this.jumpWanted) this.jump();
       }
@@ -375,7 +552,9 @@ export class Game {
         o.hit = true;
         this.lives--;
         this.invincible = 1.6;
-        this.shake = 0.35;
+        this.addTrauma(HIT_TRAUMA[o.type]);
+        this.me.hitT = 0.4;
+        this.hitStop = Math.max(this.hitStop, HIT_STOP[o.type]); // deux chocs : le plus long gagne
         this.onEvent('hit', o.type);
         if (this.lives <= 0) {
           this.state = 'over';
@@ -393,16 +572,15 @@ export class Game {
       if (!c.taken && Math.abs(p.z) < 0.7 && Math.abs(p.x - this.px) < 0.9 && Math.abs(p.y - bodyY) < 1.1) {
         c.taken = true;
         this.coinCount++;
-        this.onEvent('coin');
+        // Série de pièces rapprochées : le son monte d'un cran à chaque pièce.
+        this.coinStreak = this.clock - this.lastCoinAt < 0.5 ? this.coinStreak + 1 : 0;
+        this.lastCoinAt = this.clock;
+        this.onEvent('coin', this.coinStreak);
       }
     }
     // Après avoir avancé le reste : une rangée neuve est déjà à sa place exacte.
     if (this.nextRow <= 0) this.spawnRow();
-    const gone = (o) => o.mesh.position.z - (o.len || 0) / 2 > DESPAWN_Z || o.taken;
-    for (const list of [this.obstacles, this.coins])
-      for (const o of list) if (gone(o)) this.scene.remove(o.mesh);
-    this.obstacles = this.obstacles.filter((o) => !gone(o));
-    this.coins = this.coins.filter((o) => !gone(o));
+    this.sweep();
 
     for (const b of this.buildings) {
       b.position.z += dz;
@@ -449,19 +627,17 @@ export class Game {
       if (Math.abs(p.z) < 0.7 && Math.abs(p.x - this.px) < 0.9 && Math.abs(p.y - this.py - 1.1) < 1.1) c.taken = true;
     }
     if (this.nextRow <= 0) this.spawnRow();
-    const gone = (o) => o.mesh.position.z - (o.len || 0) / 2 > DESPAWN_Z || o.taken;
-    for (const list of [this.obstacles, this.coins]) for (const o of list) if (gone(o)) this.scene.remove(o.mesh);
-    this.obstacles = this.obstacles.filter((o) => !gone(o));
-    this.coins = this.coins.filter((o) => !gone(o));
+    this.sweep();
     for (const b of this.buildings) {
       b.position.z += dz;
       if (b.position.z - b.userData.d / 2 > DESPAWN_Z + 10) b.position.z -= b.userData.span;
     }
   }
 
-  animate(dt) {
+  // dt = temps de jeu (ralenti pendant le mini-gel), realDt = temps réel.
+  animate(dt, realDt = dt) {
     // Traverses
-    const m = new THREE.Matrix4();
+    const m = this._m;
     const off = this.scroll % SLEEPER_GAP;
     for (let l = 0; l < 3; l++)
       for (let i = 0; i < N_SLEEPERS; i++) {
@@ -469,14 +645,29 @@ export class Game {
         this.sleepers.setMatrixAt(l * N_SLEEPERS + i, m);
       }
     this.sleepers.instanceMatrix.needsUpdate = true;
+    this.city.update(this.scroll, this.px, this.distance);
 
     // Personnage
     const rolling = this.rollLeft > 0;
     const air = this.py > 0.05;
     this.runPhase += dt * (4 + this.speed * 0.6) * (this.state === 'play' || this.state === 'watch' ? this.run : 0);
-    const bob = poseCharacter(this.me, this.runPhase, this.run, air, rolling, dt);
+    let bob = 0;
+    if (this.me.mixer) {
+      this.me.hitT = Math.max(0, (this.me.hitT || 0) - dt);
+      const want =
+        this.state === 'over' ? 'death' : rolling ? 'roll' : this.me.hitT > 0 ? 'hit' : this.run > 0.08 || air ? 'run' : 'idle';
+      poseModel(this.me, want, air ? 0.35 : 0.7 + this.speed / 18, dt);
+    } else bob = poseCharacter(this.me, this.runPhase, this.run, air, rolling, dt);
     this.player.position.set(this.px, this.py + bob, 0);
     this.player.rotation.z = (this.lane * LANE_W - this.px) * -0.12;
+    // Écrasement / étirement : ressort amorti qui dépasse un peu puis revient pile à 1.
+    if (this.squash || this.squashV) {
+      this.squashV += (-400 * this.squash - 18 * this.squashV) * dt;
+      this.squash += this.squashV * dt;
+      if (Math.abs(this.squash) < 0.002 && Math.abs(this.squashV) < 0.05) this.squash = this.squashV = 0;
+    }
+    const sq = this.squash;
+    this.player.scale.set(1 + sq * 0.6, 1 - sq, 1 + sq * 0.6);
     const visible = this.invincible <= 0 || Math.floor(this.time * 12) % 2 === 0;
     this.player.visible = visible;
     this.shadow.position.set(this.px, 0.01, 0);
@@ -490,7 +681,12 @@ export class Game {
       const gap = Math.max(-4, Math.min(14, gs.gap || 0));
       gh.z += (-3.6 - gap * 0.5 - gh.z) * (1 - Math.exp(-dt / 0.3));
       gh.phase += dt * (4 + (gs.speed || 0) * 0.6) * (gs.run || 0);
-      const gb = poseCharacter(gh, gh.phase, gs.run || 0, gs.py > 0.05, !!gs.roll, dt);
+      let gb = 0;
+      if (gh.mixer) {
+        const air = gs.py > 0.05;
+        const want = gs.alive === false ? 'death' : gs.roll ? 'roll' : (gs.run || 0) > 0.08 || air ? 'run' : 'idle';
+        poseModel(gh, want, air ? 0.35 : 0.7 + (gs.speed || 0) / 18, dt);
+      } else gb = poseCharacter(gh, gh.phase, gs.run || 0, gs.py > 0.05, !!gs.roll, dt);
       gh.group.position.set(gh.px, (gs.py || 0) + gb, gh.z);
       gh.fade += ((gs.alive === false ? 0.12 : 1) - gh.fade) * (1 - Math.exp(-dt / 0.4));
       const blink = gs.hurt && Math.floor(this.time * 12) % 2 === 0;
@@ -498,15 +694,37 @@ export class Game {
       gh.group.visible = true;
     } else if (gh) gh.group.visible = false;
 
-    // Caméra : derrière le joueur, suit doucement la voie.
-    this.shake = Math.max(0, this.shake - dt);
-    const k = this.shake * 0.6;
-    this.camera.position.set(
-      this.px * 0.55 + (Math.random() - 0.5) * k,
-      4.0 + this.py * 0.25 + (Math.random() - 0.5) * k,
-      6.6,
-    );
+    // Pièces ramassées : elles suivent le joueur, grossissent puis rétrécissent à zéro.
+    let n = 0;
+    for (const c of this.pops) {
+      c.t += realDt;
+      const k = c.t / POP_TIME;
+      if (k >= 1) {
+        this.release('coin', c);
+        continue;
+      }
+      c.mesh.scale.setScalar(k < 0.35 ? 1 + 0.7 * (k / 0.35) : 1.7 * (1 - (k - 0.35) / 0.65));
+      c.mesh.position.x += (this.px - c.mesh.position.x) * (1 - Math.exp(-realDt / 0.05));
+      c.mesh.position.y += realDt * 4;
+      c.mesh.rotation.z += realDt * 25;
+      this.pops[n++] = c;
+    }
+    this.pops.length = n;
+
+    // Caméra : derrière le joueur, suit doucement la voie. Champ un peu plus large quand on va vite.
+    const pt = this.portrait || 0;
+    const fov = BASE_FOV + 16 * pt + FOV_BOOST * Math.max(0, Math.min(1, (this.speed - 8) / 16));
+    if (Math.abs(fov - this.camera.fov) > 0.01) {
+      this.camera.fov += (fov - this.camera.fov) * (1 - Math.exp(-realDt / 0.5));
+      this.camera.updateProjectionMatrix();
+    }
+    // Tremblement : somme de sinus (doux, jamais de « neige » image par image), amplitude trauma².
+    this.trauma = Math.max(0, this.trauma - TRAUMA_DECAY * realDt);
+    const sh = this.trauma * this.trauma * this.shakeStrength;
+    const t = this.time * 30;
+    this.camera.position.set(this.px * 0.55 + 0.45 * sh * Math.sin(t * 1.7), 4.0 + 1.4 * pt + this.py * 0.25 + 0.3 * sh * Math.sin(t * 2.3), 6.6 + 2.4 * pt);
     this.camera.lookAt(this.px * 0.75, 1.5 + this.py * 0.2, -9);
+    if (sh) this.camera.rotateZ(0.05 * sh * Math.sin(t * 1.1));
   }
 }
 
@@ -525,6 +743,7 @@ function grey(hex) {
 }
 
 export function makeCharacter(kind, ghost = false) {
+  if (ASSETS) return makeModelCharacter(kind, ghost);
   const look = LOOKS[kind] || LOOKS.garcon;
   const mats = [];
   const m = (color) => {
@@ -577,7 +796,64 @@ export function makeCharacter(kind, ghost = false) {
     legR: limb(0.17, 0.84, 0.72, pants, shoe),
   };
   if (ghost) g.traverse((o) => o.isMesh && (o.renderOrder = 2));
+  else g.traverse((o) => o.isMesh && (o.castShadow = true)); // le fantôme, lui, ne fait pas d'ombre
   return c;
+}
+
+// Personnage en modèle animé (Quaternius). Le fantôme = même modèle en gris transparent.
+function makeModelCharacter(kind, ghost) {
+  const src = ASSETS.chars[kind] || ASSETS.chars.garcon;
+  const model = cloneSkinned(src.scene);
+  model.rotation.y = Math.PI; // le modèle regarde +z (la caméra) : on lui fait voir la route
+  model.scale.setScalar(CHAR_SCALE);
+  const g = new THREE.Group();
+  g.add(model);
+  const mats = [];
+  model.traverse((o) => {
+    if (!o.isMesh) return;
+    o.frustumCulled = false; // la boîte d'un maillage animé ne suit pas ses os
+    if (ghost) {
+      o.material = [].concat(o.material).map((m) => {
+        // Adversaire : ses couleurs, mais transparent (on voit à travers).
+        const gm = toon(m.color.getHex(), { transparent: true, opacity: 0.55, depthWrite: false });
+        mats.push(gm);
+        return gm;
+      });
+      if (o.material.length === 1) o.material = o.material[0];
+      o.renderOrder = 2;
+    } else {
+      o.castShadow = true;
+      // Ombrage cartoon, mêmes couleurs que le modèle.
+      o.material = [].concat(o.material).map((m) => toon(m.color.getHex()));
+      if (o.material.length === 1) o.material = o.material[0];
+    }
+  });
+  const mixer = new THREE.AnimationMixer(model);
+  const clip = (n) => src.animations.find((a) => a.name.endsWith('|' + n));
+  const actions = {};
+  for (const [k, n] of Object.entries({ idle: 'Idle', run: 'Run', roll: 'Roll', hit: 'HitRecieve', death: 'Death' })) {
+    const a = mixer.clipAction(clip(n));
+    if (k !== 'idle' && k !== 'run') {
+      a.setLoop(THREE.LoopOnce, 1);
+      a.clampWhenFinished = true;
+    }
+    actions[k] = a;
+  }
+  actions.roll.timeScale = clip('Roll').duration / ROLL_TIME; // la roulade dure le temps du jeu
+  return { kind, group: g, mats, mixer, actions, cur: null };
+}
+
+// Passe en douceur d'une animation à l'autre (fondu court pour roulade et choc).
+function poseModel(c, want, runSpeed, dt) {
+  if (c.cur !== want) {
+    const next = c.actions[want];
+    next.reset().play();
+    if (c.curAction) c.curAction.crossFadeTo(next, want === 'roll' || want === 'hit' ? 0.08 : 0.18, false);
+    c.cur = want;
+    c.curAction = next;
+  }
+  if (want === 'run') c.curAction.timeScale = runSpeed;
+  c.mixer.update(dt);
 }
 
 // Pose d'un personnage (course, saut, roulade). Renvoie le petit rebond vertical.

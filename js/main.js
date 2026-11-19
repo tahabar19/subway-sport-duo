@@ -1,8 +1,9 @@
 // Subway Sport Duo : caméra -> pose -> détecteur -> jeu, plus la liaison avec l'autre joueur.
-import { Game } from './game.js?v=5';
-import { MotionDetector, DEFAULTS } from './motion.js?v=5';
-import { Net, newCode, cleanCode } from './net.js?v=5';
-import { Voice, opusSupported } from './voice.js?v=5';
+import { Game } from './game.js?v=10';
+import { loadAssets } from './assets.js?v=10';
+import { MotionDetector, DEFAULTS } from './motion.js?v=10';
+import { Net, newCode, cleanCode } from './net.js?v=10';
+import { Voice, opusSupported } from './voice.js?v=10';
 import { PoseLandmarker, FilesetResolver } from '../vendor/vision_bundle.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -28,9 +29,19 @@ const RUN_TIMEOUT = 1.1; // sans petit saut pendant ce temps, le personnage s'ar
 const CADENCE_NORMAL = 2.6, PACE_PER_HOP = 0.45, PACE_MIN = 0.5, PACE_MAX = 1.6;
 const SEND_EVERY = 1 / 12; // état envoyé à l'adversaire 12 fois par seconde
 const EMOJI = { garcon: '👦', fille: '👧' };
+// Téléphone / tablette : pas de clavier, on joue au doigt (glisser) ou avec la caméra.
+const TOUCH = matchMedia('(hover: none) and (pointer: coarse)').matches || navigator.maxTouchPoints > 0;
 
 const detector = new MotionDetector({ ...DEFAULTS, ...load('subway-sport-cfg', {}) });
-const game = new Game($('game'));
+// Modèles 3D : si le chargement rate (réseau…), le jeu repart avec les anciens personnages en cubes.
+let assets = null;
+try {
+  assets = await loadAssets('?v=10');
+} catch (e) {
+  console.warn('Modèles 3D non chargés, retour aux cubes :', e);
+}
+const game = new Game($('game'), assets);
+game.shakeStrength = Math.max(0, Math.min(1, Number(load('subway-duo-shake', 1))));
 const net = new Net();
 
 // Moi et l'adversaire
@@ -41,6 +52,7 @@ const wins = { me: 0, opp: 0 };
 let phase = 'loading'; // loading | lobby | ready | calib | waiting | countdown | play | over
 let landmarker = null;
 let camOk = false;
+let camLoading = true; // modèle de pose en cours de chargement (~15 Mo la première fois sur téléphone)
 let keyboard = false; // jeu au clavier : le personnage court tout seul
 let lastVideoTime = -1;
 let measure = null;
@@ -63,7 +75,8 @@ const clampLives = (n) => (Number.isFinite(Number(n)) ? Math.max(1, Math.min(10,
 let audio = null;
 const audioCtx = () => {
   audio ??= new AudioContext();
-  if (audio.state === 'suspended') audio.resume();
+  // iPhone : après un appel ou la mise en veille, l'état peut être « interrupted » au lieu de « suspended ».
+  if (audio.state !== 'running') audio.resume().catch(() => {});
   return audio;
 };
 function beep(freq, dur = 0.08, type = 'square', vol = 0.06) {
@@ -112,7 +125,8 @@ async function applyMic() {
     voice.setMic(false);
     toast('Micro refusé ou introuvable');
   }
-  $('micBtn').textContent = me.mic ? '🎤 Micro activé' : '🔇 Micro coupé';
+  $('micBtn').textContent = me.mic ? '🎤 Micro' : '🔇 Micro';
+  $('micBtn').setAttribute('aria-label', me.mic ? 'Micro activé (toucher pour couper)' : 'Micro coupé (toucher pour activer)');
   $('micBtn').classList.toggle('live', me.mic);
   net.send({ t: 'mic', on: me.mic });
   store('subway-duo-me', { name: me.name, char: me.char, mic: me.mic });
@@ -129,18 +143,18 @@ net.onStatus = (s, detail) => {
   room.classList.add('on');
   room.classList.toggle('ok', s === 'connecte');
   if (s === 'connecte') {
-    $('roomText').textContent = `Salle ${net.code} · connecté`;
+    $('roomText').textContent = `${net.code} · connecté`;
     sendHello();
   } else if (s === 'attente') {
-    $('roomText').textContent = `Salle ${net.code} · en attente de ton adversaire`;
+    $('roomText').textContent = `${net.code} · en attente`;
   } else if (s === 'perdu') {
-    $('roomText').textContent = `Salle ${net.code} · connexion perdue`;
+    $('roomText').textContent = `${net.code} · déconnecté`;
     if (opp) toast(`${oppName()} s'est déconnecté(e)`);
     opp = null;
     game.setGhost(null);
     game.ghostState = null;
   } else if (s === 'erreur') {
-    $('roomText').textContent = `Salle ${net.code} · ${detail}`;
+    $('roomText').textContent = `${net.code} · ${detail}`;
     if (phase === 'lobby') $('lobbyErr').textContent = detail;
   }
 };
@@ -184,7 +198,7 @@ net.onMessage = (m) => {
     opp.stAt = now();
   } else if (m.t === 'hit') {
     toast(`💥 ${oppName()} ${m.what === 'train' ? "s'est pris un train" : "s'est cogné(e)"} !`);
-    if (phase === 'watch') (game.shake = 0.35, beep(110, 0.3, 'sawtooth', 0.06));
+    if (phase === 'watch') (game.addTrauma(m.what === 'train' ? 0.7 : 0.45), beep(110, 0.3, 'sawtooth', 0.06));
   } else if (m.t === 'over') {
     const wasOver = opp.final !== null;
     opp.final = Math.max(0, Math.round(Number(m.score) || 0));
@@ -231,6 +245,7 @@ function setPhase(p) {
   phaseStart = now();
   holdTime = 0;
   $('lobby').classList.toggle('hidden', p !== 'lobby' && p !== 'loading');
+  $('tools').classList.toggle('cache', p === 'lobby' || p === 'loading');
   $('panel').classList.toggle('hidden', p === 'play' || p === 'watch' || p === 'lobby' || p === 'loading');
   $('livesRow').style.display = p === 'ready' || p === 'waiting' || p === 'over' ? '' : 'none';
   $('watch').classList.toggle('on', p === 'watch');
@@ -310,26 +325,63 @@ $('lobbyForm').addEventListener('submit', async (e) => {
   else net.join(code);
   const link = location.origin + location.pathname + '?salle=' + code;
   history.replaceState(null, '', link);
-  $('share').innerHTML = '';
-  const span = document.createElement('span');
-  span.textContent = `Envoie ce lien à ton adversaire : ${link} `;
-  const copy = document.createElement('button');
-  copy.type = 'button';
-  copy.className = 'choice';
-  copy.style.cssText = 'padding:4px 12px;font-size:15px;margin-left:6px';
-  copy.textContent = 'Copier';
-  copy.onclick = () => navigator.clipboard?.writeText(link).then(() => (copy.textContent = 'Copié ✓'));
-  $('share').append(span, copy);
+  renderShare(code, link);
+  keepAwake();
   $('micBtn').classList.add('on');
   $('opp').classList.add('on');
   setPhase('ready');
+});
+
+// Code de la partie, en gros, et bouton pour l'envoyer (feuille de partage de l'iPhone : Messages, WhatsApp…).
+function renderShare(code, link) {
+  const box = $('share');
+  box.innerHTML = '';
+  const label = document.createElement('span');
+  label.textContent = 'Code à donner à ton adversaire';
+  const big = document.createElement('span');
+  big.className = 'code';
+  big.textContent = code;
+  const send = document.createElement('button');
+  send.type = 'button';
+  send.className = 'btn alt';
+  send.textContent = navigator.share ? '📤 Envoyer le lien' : '📋 Copier le lien';
+  send.onclick = async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: 'Subway Duo', text: `Viens jouer à Subway Duo avec moi ! Code : ${code}`, url: link });
+      } catch {}
+    } else {
+      navigator.clipboard?.writeText(link).then(() => (send.textContent = 'Lien copié ✓'));
+    }
+  };
+  const small = document.createElement('span');
+  small.className = 'link';
+  small.textContent = link;
+  box.append(label, big, send, small);
+}
+
+// ---- Écran allumé pendant la partie (on joue loin du téléphone, sans le toucher)
+let wakeLock = null;
+async function keepAwake() {
+  if (wakeLock || document.visibilityState !== 'visible' || !navigator.wakeLock) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => (wakeLock = null));
+  } catch {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  // Retour dans l'appli (iPhone : après la veille ou un changement d'appli) : on relance tout.
+  if (phase !== 'lobby' && phase !== 'loading') keepAwake();
+  if (video.srcObject && video.paused) video.play().catch(() => {});
+  if (audio && audio.state !== 'running') audio.resume().catch(() => {});
 });
 
 // ---- Caméra et modèle de pose
 async function initCamera() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 60 } },
+      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 60 } },
       audio: false,
     });
     video.srcObject = stream;
@@ -352,7 +404,9 @@ async function initCamera() {
   } catch (err) {
     console.error(err);
     $('cam').style.display = 'none';
+    $('camBtn').style.display = 'none';
   }
+  camLoading = false;
 }
 
 function trackPose(t) {
@@ -436,7 +490,39 @@ function resultText() {
   return `${head}\nVictoires : toi ${wins.me} – ${wins.opp} ${opp.name}`;
 }
 
+// Boutons sous le message : ce que fait la touche Entrée au clavier, au doigt sur téléphone.
+let actsKey = '';
+function renderActs() {
+  const list = [];
+  const canRestart = phase === 'ready' || (phase === 'over' && !oppAlive());
+  if (canRestart) list.push(['touch', TOUCH ? '📱 ' + (phase === 'over' ? 'Rejouer' : 'Jouer') + ' au doigt' : '⌨️ Jouer au clavier', '']);
+  if (phase === 'waiting' && (!opp || !net.connected)) list.push(['solo', '🏃 Jouer seul en attendant', 'alt']);
+  const key = list.map((a) => a[0] + a[1]).join('|');
+  if (key === actsKey) return;
+  actsKey = key;
+  $('acts').replaceChildren(
+    ...list.map(([act, text, cls]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn ' + cls;
+      b.dataset.act = act;
+      b.textContent = text;
+      return b;
+    }),
+  );
+}
+$('acts').addEventListener('click', (e) => {
+  const act = e.target.closest('button')?.dataset.act;
+  audioCtx();
+  keepAwake();
+  if (act === 'touch' && (phase === 'ready' || (phase === 'over' && !oppAlive()))) {
+    keyboard = true;
+    ready();
+  } else if (act === 'solo' && phase === 'waiting' && (!opp || !net.connected)) startCountdown((Math.random() * 2 ** 32) >>> 0);
+});
+
 function updatePanel(dt, t) {
+  renderActs();
   const msg = $('msg'), bar = $('bar').firstElementChild;
   const handsUp = MotionDetector.handsUp(measure);
   if (phase === 'ready' || phase === 'over') {
@@ -444,10 +530,16 @@ function updatePanel(dt, t) {
     holdTime = canStart && handsUp ? holdTime + dt : 0;
     bar.style.width = Math.min(100, (holdTime / HOLD_TO_START) * 100) + '%';
     const how = !camOk
-      ? 'Pas de caméra : appuie sur Entrée pour jouer au clavier.'
+      ? camLoading
+        ? 'Chargement de la caméra…'
+        : TOUCH
+          ? 'Pas de caméra : joue au doigt 👇'
+          : 'Pas de caméra : appuie sur Entrée pour jouer au clavier.'
       : measure
         ? `Lève les deux bras pour ${phase === 'over' ? 'la revanche' : 'te mettre prêt(e)'} 🙌`
-        : 'Recule à 2–3 m de la caméra :\non doit te voir en entier, de la tête aux pieds.';
+        : TOUCH
+          ? 'Pose le téléphone debout et recule à 2–3 m :\non doit te voir en entier, de la tête aux pieds.'
+          : 'Recule à 2–3 m de la caméra :\non doit te voir en entier, de la tête aux pieds.';
     if (phase === 'over') msg.textContent = oppAlive() ? resultText() : `${resultText()}\n${how}`;
     else msg.textContent = how;
     if (holdTime >= HOLD_TO_START) setPhase('calib');
@@ -474,7 +566,8 @@ function updatePanel(dt, t) {
     }
   } else if (phase === 'waiting') {
     bar.style.width = '0%';
-    if (!opp || !net.connected) msg.textContent = `Prêt(e) ✅\nEn attente de ton adversaire…\n(Entrée = jouer seul en attendant)`;
+    if (!opp || !net.connected)
+      msg.textContent = `Prêt(e) ✅\nEn attente de ton adversaire…${TOUCH ? '' : '\n(Entrée = jouer seul en attendant)'}`;
     else if (opp.phase === 'play') msg.textContent = `Prêt(e) ✅\n${opp.name} finit sa partie : ${oppScoreNow()}…`;
     else if (opp.phase !== 'waiting') msg.textContent = `Prêt(e) ✅\nEn attente de ${opp.name}…`;
     else msg.textContent = 'Départ…';
@@ -508,7 +601,7 @@ function updateHud(t) {
   $('lives').textContent = done ? '' : '❤'.repeat(Math.max(0, game.lives));
   if (phase === 'watch' && opp) $('watchText').textContent = `👀 Tu regardes ${opp.name} · ${oppScoreNow()} — toi : ${myFinal}`;
   const stopped = phase === 'play' && !keyboard && t - lastActivity > RUN_TIMEOUT;
-  $('hint').textContent = measure ? 'Sautille pour avancer !' : 'Je ne te vois plus — reviens dans le cadre';
+  $('hint').textContent = measure ? 'Sautille pour avancer !' : TOUCH ? 'Je ne te vois plus — reviens dans le cadre (ou glisse du doigt)' : 'Je ne te vois plus — reviens dans le cadre';
   $('hint').classList.toggle('on', stopped);
 
   $('share').classList.toggle('on', (phase === 'ready' || phase === 'waiting') && !opp && !!net.code);
@@ -578,10 +671,15 @@ function sendState(t) {
 }
 
 game.onEvent = (e, info) => {
-  if (e === 'coin') beep(1320, 0.07, 'triangle');
+  if (e === 'coin') beep(1320 * 2 ** (Math.min(info, 7) / 12), 0.07, 'triangle'); // série : un demi-ton de plus par pièce
   else if (e === 'jump') beep(520, 0.12, 'sine', 0.08);
   else if (e === 'roll') beep(260, 0.12, 'sine', 0.08);
-  else if (e === 'hit') (beep(110, 0.3, 'sawtooth', 0.1), net.send({ t: 'hit', what: info }));
+  else if (e === 'daytime') {
+    toast({ 'après-midi': "☀️ L'après-midi", 'coucher de soleil': '🌇 Le soleil se couche', nuit: '🌙 La nuit tombe' }[info] || info);
+  } else if (e === 'quality') {
+    const names = ['très basse', 'basse', 'moyenne', 'haute'];
+    toast(`🖥️ Graphismes réglés sur « ${names[info]} » pour rester fluide`);
+  } else if (e === 'hit') (beep(110, 0.3, 'sawtooth', 0.1), net.send({ t: 'hit', what: info }));
   else if (e === 'over') {
     myFinal = game.score;
     net.send({ t: 'over', score: myFinal });
@@ -602,8 +700,9 @@ addEventListener('keydown', (e) => {
   }
   if (k === 'Enter' && phase === 'waiting' && (!opp || !net.connected)) return startCountdown((Math.random() * 2 ** 32) >>> 0);
   if ((k === 'm' || k === 'M') && phase !== 'lobby') return toggleMic();
-  if (k === 'r' || k === 'R') return $('settings').classList.toggle('on');
-  if (k === 'v' || k === 'V') return void ($('cam').style.display = $('cam').style.display ? '' : 'none');
+  if (k === 'r' || k === 'R') return toggleSettings();
+  if (k === 'v' || k === 'V') return toggleCam();
+  if (k === 'Escape') return toggleSettings(false);
   if (phase !== 'play') return;
   const moves = {
     ArrowLeft: () => game.moveLane(-1),
@@ -619,6 +718,50 @@ addEventListener('keydown', (e) => {
   }
 });
 
+// ---- Au doigt : glisser à gauche / à droite = voie, vers le haut = saut, vers le bas = roulade.
+// Le geste part dès que le doigt a bougé de quelques millimètres, sans attendre qu'il se lève.
+let swipe = null;
+const SWIPE_MIN = 22; // pixels
+addEventListener(
+  'touchstart',
+  (e) => {
+    swipe = null;
+    if (phase !== 'play' || e.touches.length !== 1 || e.target.closest?.('button, input, select, #settings')) return;
+    swipe = { x: e.touches[0].clientX, y: e.touches[0].clientY, done: false };
+  },
+  { passive: true },
+);
+addEventListener(
+  'touchmove',
+  (e) => {
+    if (!swipe || swipe.done || phase !== 'play') return;
+    const dx = e.touches[0].clientX - swipe.x, dy = e.touches[0].clientY - swipe.y;
+    if (Math.hypot(dx, dy) < SWIPE_MIN) return;
+    swipe.done = true;
+    keyboard = true; // le personnage court tout seul
+    if (Math.abs(dx) > Math.abs(dy)) game.moveLane(dx > 0 ? 1 : -1);
+    else if (dy < 0) game.jump();
+    else game.roll();
+  },
+  { passive: true },
+);
+addEventListener('touchend', () => (swipe = null), { passive: true });
+// iPhone : pas de zoom par pincement ni double toucher dans le jeu.
+for (const ev of ['gesturestart', 'gesturechange', 'dblclick']) document.addEventListener(ev, (e) => e.preventDefault());
+
+// ---- Boutons micro, caméra, réglages
+function toggleSettings(on = !$('settings').classList.contains('on')) {
+  $('settings').classList.toggle('on', on);
+}
+function toggleCam() {
+  $('cam').style.display = $('cam').style.display ? '' : 'none';
+}
+$('setBtn').addEventListener('click', () => toggleSettings());
+$('setClose').addEventListener('click', () => toggleSettings(false));
+$('settings').addEventListener('click', (e) => e.target === $('settings') && toggleSettings(false));
+$('camBtn').addEventListener('click', toggleCam);
+$('micBtn').textContent = me.mic ? '🎤 Micro' : '🔇 Micro';
+
 // ---- Réglages
 for (const input of document.querySelectorAll('#settings [data-k]')) {
   const k = input.dataset.k;
@@ -630,6 +773,28 @@ for (const input of document.querySelectorAll('#settings [data-k]')) {
     show();
     store('subway-sport-cfg', detector.cfg);
   });
+}
+
+// Tremblement de l'écran au choc : 0 = coupé (si ça donne mal au cœur).
+{
+  const input = $('shake');
+  const show = () => (input.nextElementSibling.textContent = Math.round(input.value * 100) + ' %');
+  input.value = game.shakeStrength;
+  show();
+  input.addEventListener('input', () => {
+    game.shakeStrength = Number(input.value);
+    show();
+    store('subway-duo-shake', game.shakeStrength);
+  });
+}
+// Graphismes : « auto » s'adapte à l'ordinateur de chaque joueur (le jeu est en ligne).
+{
+  const sel = $('quality');
+  const apply = (v) => (v === 'auto' ? game.setQuality(3, true) : game.setQuality(Number(v)));
+  sel.value = load('subway-duo-quality', 'auto');
+  if (![...sel.options].some((o) => o.value === sel.value)) sel.value = 'auto';
+  apply(sel.value);
+  sel.addEventListener('change', () => (apply(sel.value), store('subway-duo-quality', sel.value)));
 }
 
 // ---- Boucle principale
@@ -656,5 +821,12 @@ window.duo = { game, net, get phase() { return phase; }, get voice() { return vo
 setPhase('lobby');
 // ?sanscamera : pour tester à deux sur un même PC, au clavier.
 if (!params.has('sanscamera')) initCamera();
-else $('cam').style.display = 'none';
+else {
+  $('cam').style.display = 'none';
+  $('camBtn').style.display = 'none';
+  camLoading = false;
+}
+// Appli hors ligne et démarrage rapide : les gros fichiers (modèle de pose, 3D) restent sur le téléphone.
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost'))
+  navigator.serviceWorker.register('sw.js').catch(() => {});
 frame();

@@ -13,6 +13,21 @@ Version à deux joueurs de Subway Sport (`~/Bureau/subway-sport`), en ligne sur 
   (8 kHz, loi µ) si un des navigateurs ne sait pas faire d'Opus. Envoyée seulement quand on parle.
   (Plus de WebRTC : les relais gratuits de PeerJS ne répondent plus, la voix ne passait pas entre deux réseaux.)
 
+## Sur iPhone (appli)
+
+Ouvrir https://tahabar19.github.io/subway-sport-duo/ dans **Safari** → bouton Partager → « Sur l'écran d'accueil ».
+L'appli s'ouvre alors en plein écran, avec son icône (`icones/`, `manifest.webmanifest`).
+
+- **Deux façons de jouer** : avec le corps (téléphone posé debout, caméra avant, recule à 2–3 m, lève les bras pour
+  te mettre prêt) ou **au doigt** (bouton « Jouer au doigt » : glisser ⬅️ ➡️ = voie, ⬆️ = saut, ⬇️ = roulade, le personnage court tout seul).
+- Le code de la partie s'affiche en gros, avec « Envoyer le lien » (feuille de partage : Messages, WhatsApp…).
+  Depuis l'appli de l'écran d'accueil, un lien reçu s'ouvre dans Safari : on peut aussi taper le code dans l'appli.
+- Boutons en bas à gauche : micro, caméra (aperçu), ⚙️ réglages (sensibilité, tremblement, graphismes).
+- Portrait (conseillé) ou paysage ; en portrait la caméra du jeu recule pour montrer les 3 voies (`Game.resize`).
+- L'écran reste allumé pendant la partie (Wake Lock) ; au retour dans l'appli, caméra et son repartent.
+- `sw.js` garde sur le téléphone les gros fichiers (modèle de pose, moteur wasm ~15 Mo, modèles 3D) : démarrage
+  rapide après la première fois. Si un fichier de `vendor/` ou `assets/` change, changer `LOURD` dans `sw.js`.
+
 ## Code
 
 - `js/net.js` — liaison (salle via MQTT)
@@ -25,4 +40,9 @@ Version à deux joueurs de Subway Sport (`~/Bureau/subway-sport`), en ligne sur 
 
 `python3 -m http.server 8790` puis deux fenêtres sur `http://localhost:8790/?sanscamera` (jeu au clavier).
 
-À chaque mise en ligne : augmenter le numéro `?v=` dans index.html et dans les import de js/main.js (cache GitHub de 10 min).
+À chaque mise en ligne : augmenter le numéro `?v=` dans index.html, manifest.webmanifest et dans les import de js/*.js (cache GitHub de 10 min), et `VERSION` dans sw.js.
+Tester en taille iPhone : Chrome → outils de développement → mode appareil (iPhone), sur `http://localhost:8790/?sanscamera`.
+
+## Modèles 3D
+
+Ville cartoon générée en code (matin → après-midi → nuit) ; personnages, trains et barrières : modèles CC0 de Quaternius et Kenney (voir `assets/CREDITS.md`). Si leur chargement échoue, le jeu revient aux personnages en cubes.

@@ -2,20 +2,38 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Subway Sport Duo</title>
+<!-- Appli iPhone / Android : « Ajouter à l'écran d'accueil » -->
+<link rel="manifest" href="manifest.webmanifest?v=10">
+<link rel="icon" href="icones/icone-192.png?v=10" type="image/png">
+<link rel="apple-touch-icon" sizes="180x180" href="icones/apple-touch-icon.png?v=10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Subway Duo">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0c162c">
+<meta name="format-detection" content="telephone=no">
 <style>
   * { box-sizing: border-box; }
+  /* Zones sûres de l'iPhone (encoche / île, barre d'accueil, bords arrondis) */
+  :root { --st: env(safe-area-inset-top, 0px); --sb: env(safe-area-inset-bottom, 0px);
+    --sl: env(safe-area-inset-left, 0px); --sr: env(safe-area-inset-right, 0px); }
   html, body { margin: 0; height: 100%; overflow: hidden; background: #8fd3ff; color: #fff;
-    font-family: system-ui, "Segoe UI", Roboto, sans-serif; user-select: none; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; user-select: none; -webkit-user-select: none;
+    -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%;
+    overscroll-behavior: none; touch-action: none; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  input, select { user-select: text; -webkit-user-select: text; }
+  button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
   .shadowed { text-shadow: 0 2px 0 rgba(0,0,0,.35), 0 0 12px rgba(0,0,0,.25); }
   button, input { font: inherit; }
 
   /* ---- Scores : moi à gauche, l'adversaire à droite */
-  .hud { position: fixed; top: 14px; font-weight: 800; line-height: 1.15; z-index: 3; }
-  #hud { left: 18px; }
-  #opp { right: 18px; text-align: right; display: none; }
+  .hud { position: fixed; top: calc(var(--st) + 14px); font-weight: 800; line-height: 1.15; z-index: 3; pointer-events: none; }
+  #hud { left: calc(var(--sl) + 18px); }
+  #opp { right: calc(var(--sr) + 18px); text-align: right; display: none; }
+  .who { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #opp.on { display: block; }
   .who { font-size: 20px; opacity: .95; }
   .score { font-size: 46px; font-variant-numeric: tabular-nums; }
@@ -26,7 +44,7 @@
   #oppGap { font-size: 22px; margin-top: 4px; }
   #opp.out .score { opacity: .55; text-decoration: line-through; text-decoration-thickness: 3px; }
 
-  #room { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); font-size: 14px; font-weight: 700;
+  #room { position: fixed; top: calc(var(--st) + 10px); left: 50%; pointer-events: none; transform: translateX(-50%); font-size: 14px; font-weight: 700;
     background: rgba(12,22,44,.45); padding: 5px 12px; border-radius: 99px; z-index: 3; display: none; white-space: nowrap; }
   #room.on { display: block; }
   #room i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #ff9f1a; margin-right: 6px; }
@@ -35,12 +53,12 @@
   #ghostTag { position: fixed; transform: translate(-50%, -100%); font-size: 16px; font-weight: 800; pointer-events: none;
     background: rgba(40,46,60,.55); padding: 2px 9px; border-radius: 99px; white-space: nowrap; display: none; z-index: 2; }
 
-  #toast { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); font-size: 24px; font-weight: 800;
+  #toast { position: fixed; top: calc(var(--st) + 64px); left: 50%; transform: translateX(-50%); font-size: 24px; font-weight: 800;
     background: rgba(12,22,44,.6); padding: 8px 18px; border-radius: 14px; opacity: 0; transition: opacity .3s;
-    pointer-events: none; z-index: 4; white-space: nowrap; }
+    pointer-events: none; z-index: 7; white-space: nowrap; max-width: calc(100vw - 24px); text-align: center; }
   #toast.on { opacity: 1; }
 
-  #hint { position: fixed; left: 0; right: 0; bottom: 9%; text-align: center; font-size: 34px;
+  #hint { position: fixed; left: 0; right: 0; bottom: calc(var(--sb) + 9%); padding: 0 12px; pointer-events: none; text-align: center; font-size: 34px;
     font-weight: 800; opacity: 0; transition: opacity .25s; pointer-events: none; }
   #hint.on { opacity: 1; }
   #action { position: fixed; left: 0; right: 0; top: 24%; text-align: center; font-size: 52px;
@@ -48,17 +66,24 @@
   #action.pop { animation: pop .6s ease-out; }
   @keyframes pop { 0% { opacity: 1; transform: scale(.7); } 30% { transform: scale(1.1); } 100% { opacity: 0; transform: scale(1); } }
 
-  #micBtn { position: fixed; left: 16px; bottom: 16px; z-index: 6; border: 0; border-radius: 99px; padding: 10px 16px;
-    font-size: 16px; font-weight: 800; color: #fff; background: rgba(12,22,44,.6); cursor: pointer; display: none; }
+  /* Barre d'outils en bas à gauche : micro, caméra, réglages (au doigt sur téléphone) */
+  #tools { position: fixed; left: calc(var(--sl) + 14px); bottom: calc(var(--sb) + 14px); z-index: 6; display: flex; gap: 8px; }
+  .tool { border: 0; border-radius: 99px; min-height: 44px; min-width: 44px; padding: 0 16px; font-size: 16px; font-weight: 800;
+    color: #fff; background: rgba(12,22,44,.6); cursor: pointer; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+  .tool.round { padding: 0; width: 44px; font-size: 20px; }
+  #tools.cache { display: none; }
+  #micBtn { display: none; }
   #micBtn.on { display: block; }
   #micBtn.live { background: #1fae6b; }
   #micBtn.talk { box-shadow: 0 0 0 4px rgba(61,255,162,.55); }
 
   /* ---- Écrans */
-  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-    background: rgba(12, 22, 44, .62); backdrop-filter: blur(3px); z-index: 4; padding: 16px; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: safe center; justify-content: center;
+    background: rgba(12, 22, 44, .62); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); z-index: 4;
+    padding: calc(var(--st) + 16px) calc(var(--sr) + 16px) calc(var(--sb) + 16px) calc(var(--sl) + 16px);
+    overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; overscroll-behavior: contain; }
   .overlay.hidden { display: none; }
-  #card { max-width: 760px; padding: 30px 40px; text-align: center; }
+  #card { max-width: 760px; width: 100%; padding: 30px 40px; text-align: center; margin: auto 0; }
   .title { font-size: 60px; font-weight: 900; margin: 0 0 6px; letter-spacing: -1px; }
   .title span { color: #ffd21f; }
   #msg { font-size: 30px; font-weight: 700; margin: 14px 0; min-height: 120px; white-space: pre-line; }
@@ -74,11 +99,20 @@
   #livesRow { display: flex; align-items: center; justify-content: center; gap: 14px; font-size: 22px; font-weight: 800; margin: 8px 0 0; }
   #livesRow .choice { display: none; }
   #livesRow.mine .choice { display: block; }
-  #watch { position: fixed; left: 50%; bottom: 7%; transform: translateX(-50%); font-size: 26px; font-weight: 800;
-    background: rgba(12,22,44,.55); padding: 10px 22px; border-radius: 16px; display: none; z-index: 3; white-space: nowrap; }
+  #watch { position: fixed; left: 50%; bottom: calc(var(--sb) + 7%); transform: translateX(-50%); font-size: 26px; font-weight: 800;
+    background: rgba(12,22,44,.55); padding: 10px 22px; border-radius: 16px; display: none; z-index: 3; white-space: nowrap;
+    max-width: calc(100vw - 24px); text-align: center; pointer-events: none; }
   #watch.on { display: block; }
-  #share { margin: 6px auto 0; font-size: 17px; display: none; }
+  #share { margin: 6px auto 4px; font-size: 17px; display: none; }
   #share.on { display: block; }
+  #share .code { display: block; font-size: 40px; font-weight: 900; letter-spacing: .18em; color: #ffd21f; margin: 2px 0 8px; user-select: text; -webkit-user-select: text; }
+  #share .btn { width: auto; display: inline-block; padding: 12px 26px; font-size: 18px; margin: 0; }
+  #share .link { display: block; font-size: 13px; opacity: .7; word-break: break-all; margin-top: 8px; user-select: text; -webkit-user-select: text; }
+  /* Boutons d'action sous le message (jouer au doigt, jouer seul…) */
+  #acts { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin: 4px auto 0; max-width: 520px; }
+  #acts:empty { display: none; }
+  #acts .btn { width: auto; flex: 1 1 200px; margin: 0; }
+  #touchHelp { margin-top: 14px; font-size: 15px; opacity: .85; display: none; }
 
   #lobby { overflow-y: auto; align-items: safe center; }
   #lobby .box { margin: auto 0; width: 100%; max-width: 560px; background: rgba(12,22,44,.55); border-radius: 22px; padding: 28px 30px; }
@@ -105,17 +139,32 @@
   #joinOnly { display: none; }
   #lobbyErr { color: #ffb4a8; font-weight: 700; min-height: 1.2em; margin-top: 10px; text-align: center; }
 
-  #cam { position: fixed; bottom: 14px; right: 14px; width: 220px; border-radius: 12px; overflow: hidden;
+  #cam { position: fixed; bottom: calc(var(--sb) + 14px); right: calc(var(--sr) + 14px); width: 220px; pointer-events: none; border-radius: 12px; overflow: hidden;
     background: #111; box-shadow: 0 4px 18px rgba(0,0,0,.35); z-index: 5; }
   #preview { display: block; width: 100%; }
   #camState { position: absolute; left: 8px; bottom: 6px; font-size: 13px; font-weight: 700; }
-  #settings { padding: 8px 12px 12px; font-size: 13px; background: #1b2233; display: none; }
-  #settings.on { display: block; }
-  #settings label { display: grid; grid-template-columns: 1fr 70px 34px; gap: 6px; align-items: center; margin-top: 6px; }
-  #settings select { grid-column: 2 / 4; }
-  video { display: none; }
+  /* Réglages : feuille par-dessus le jeu (bouton ⚙ ou touche R) */
+  #settings { position: fixed; inset: 0; z-index: 9; display: none; align-items: flex-end; justify-content: center;
+    background: rgba(12,22,44,.55); padding: calc(var(--st) + 12px) 0 0; touch-action: pan-y; }
+  #settings.on { display: flex; }
+  #settings .sheet { width: 100%; max-width: 520px; max-height: 100%; overflow-y: auto; overscroll-behavior: contain;
+    background: #1b2233; border-radius: 20px 20px 0 0; padding: 18px calc(var(--sr) + 20px) calc(var(--sb) + 20px) calc(var(--sl) + 20px);
+    font-size: 16px; box-shadow: 0 -8px 30px rgba(0,0,0,.4); }
+  #settings .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  #settings h2 { margin: 0; font-size: 22px; }
+  #settings h3 { margin: 18px 0 2px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
+  #settings label { display: grid; grid-template-columns: 1fr minmax(110px, 46%) 46px; gap: 10px; align-items: center;
+    min-height: 48px; border-bottom: 1px solid rgba(255,255,255,.07); }
+  #settings label span { text-align: right; font-variant-numeric: tabular-nums; font-size: 14px; opacity: .85; }
+  #settings select { grid-column: 2 / 4; font-size: 16px; padding: 8px; border-radius: 10px; border: 0; background: #2a3349; color: #fff; }
+  #settings input[type=range] { width: 100%; accent-color: #ffd21f; height: 28px; }
+  #settings .close { border: 0; border-radius: 99px; width: 44px; height: 44px; font-size: 22px; color: #fff;
+    background: rgba(255,255,255,.12); cursor: pointer; }
+  /* Pas de display:none : sur iPhone, Safari ne décode plus les images d'une vidéo masquée ainsi
+     (la détection des mouvements recevrait des images vides). */
+  video { position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; z-index: -1; }
 
-  @media (max-height: 820px) {
+  @media (max-height: 940px) {
     #lobby .title { font-size: 36px; } #lobby .tag { margin-bottom: 10px; } .field { margin: 10px 0; }
     .choice { padding: 7px 8px; font-size: 16px; } .choice b { font-size: 26px; } .btn { padding: 11px; }
     #name, #code { padding: 9px 12px; } .or { margin: 8px 0 6px; }
@@ -124,6 +173,42 @@
     .score { font-size: 32px; } #speed { font-size: 22px; } .title { font-size: 40px; }
     #moves { grid-template-columns: repeat(2, 1fr); } #msg { font-size: 22px; } #card { padding: 20px 10px; }
     #cam { width: 140px; } #lobby .box { padding: 20px 16px; }
+  }
+  /* Téléphone (écran tactile) */
+  @media (hover: none) and (pointer: coarse) { #keys { display: none; } #touchHelp { display: block; } }
+  @media (max-width: 500px), (max-height: 500px) {
+    .hud { top: calc(var(--st) + 8px); }
+    #hud { left: calc(var(--sl) + 12px); } #opp { right: calc(var(--sr) + 12px); }
+    .who { font-size: 14px; } .score { font-size: 30px; } #speed { font-size: 16px; margin: 0 0 2px; }
+    .sub { font-size: 13px; } .lives { font-size: 15px; letter-spacing: 1px; } #oppState { font-size: 13px; } #oppGap { font-size: 14px; }
+    #room { font-size: 12px; padding: 4px 10px; max-width: 42vw; overflow: hidden; text-overflow: ellipsis; }
+    #toast { font-size: 16px; padding: 8px 14px; white-space: normal; top: calc(var(--st) + 118px); }
+    #hint { font-size: 22px; bottom: calc(var(--sb) + 80px); }
+    #action { font-size: 38px; }
+    #watch { font-size: 16px; padding: 8px 14px; white-space: normal; bottom: calc(var(--sb) + 72px); }
+    #ghostTag { font-size: 13px; }
+    #cam { width: 96px; border-radius: 10px; bottom: calc(var(--sb) + 12px); right: calc(var(--sr) + 12px); }
+    #camState { font-size: 10px; left: 5px; bottom: 3px; }
+    #tools { left: calc(var(--sl) + 12px); bottom: calc(var(--sb) + 12px); }
+    #panel { padding-bottom: calc(var(--sb) + 72px); } /* la barre micro / réglages ne cache pas les boutons */
+    #card { padding: 6px 2px; } .title { font-size: 34px; } #lobby .title { font-size: 38px; }
+    #msg { font-size: 19px; min-height: 0; margin: 10px 0 14px; } #msg.big { font-size: 96px; }
+    #bar { width: 260px; margin-bottom: 16px; }
+    #moves { gap: 8px; } #moves div { font-size: 13px; padding: 8px 6px; } #moves b { font-size: 22px; }
+    #share { font-size: 15px; } #share .code { font-size: 34px; }
+    #livesRow { font-size: 18px; }
+  }
+  /* Téléphone couché : peu de hauteur */
+  @media (max-height: 500px) {
+    #card { max-width: 640px; } .title { font-size: 26px; margin: 0; } #msg { font-size: 17px; margin: 6px 0 10px; }
+    #msg.big { font-size: 72px; } #moves { grid-template-columns: repeat(4, 1fr); } #moves b { font-size: 18px; }
+    #toast { top: calc(var(--st) + 54px); }
+    #cam { width: 120px; }
+    #card .title { display: none; }
+    #share.on { display: flex; align-items: center; justify-content: center; gap: 6px 14px; flex-wrap: wrap; }
+    #share .code { font-size: 28px; margin: 0; } #share .link { display: none; }
+    #share .btn { padding: 8px 18px; font-size: 16px; }
+    #livesRow .choice { width: 44px; padding: 2px 0; } #bar { margin-bottom: 10px; }
   }
 </style>
 </head>
@@ -151,7 +236,11 @@
 <div id="toast" class="shadowed"></div>
 <div id="action" class="shadowed"></div>
 <div id="hint" class="shadowed">Sautille pour avancer !</div>
-<button id="micBtn" type="button">🔇 Micro coupé</button>
+<div id="tools">
+  <button id="micBtn" class="tool" type="button">🔇 Micro coupé</button>
+  <button id="camBtn" class="tool round" type="button" aria-label="Montrer ou cacher la caméra">📷</button>
+  <button id="setBtn" class="tool round" type="button" aria-label="Réglages">⚙️</button>
+</div>
 <div id="watch" class="shadowed"><span id="watchText"></span></div>
 
 <!-- Accueil : prénom, personnage, micro, créer ou rejoindre -->
@@ -212,12 +301,14 @@
     </div>
     <div id="msg">Chargement…</div>
     <div id="bar"><i></i></div>
+    <div id="acts"></div>
     <div id="moves">
       <div><b>🏃</b>Petits sauts sur place<br>= avancer</div>
       <div><b>⬆️</b>Grand saut<br>= sauter</div>
       <div><b>↔️</b>Saut sur le côté<br>= changer de voie</div>
       <div><b>⬇️</b>Traction (ou squat)<br>= se baisser</div>
     </div>
+    <div id="touchHelp">Au doigt : glisse ⬅️ ➡️ pour changer de voie, ⬆️ pour sauter, ⬇️ pour la roulade</div>
     <div id="keys">Clavier : Entrée = prêt sans caméra · flèches / espace = jouer · M = micro · R = réglages · V = caméra</div>
   </div>
 </div>
@@ -225,8 +316,11 @@
 <div id="cam">
   <canvas id="preview" width="320" height="240"></canvas>
   <div id="camState" class="shadowed"></div>
-  <div id="settings">
-    <b>Sensibilité</b> (longueurs de torse)
+</div>
+<div id="settings">
+  <div class="sheet" role="dialog" aria-labelledby="setTitle">
+    <div class="head"><h2 id="setTitle">Réglages</h2><button type="button" class="close" id="setClose" aria-label="Fermer">✕</button></div>
+    <h3>Sensibilité de la caméra (longueurs de torse)</h3>
     <label>Petit saut <input type="range" data-k="hop" min="0.02" max="0.15" step="0.005"><span></span></label>
     <label>Grand saut <input type="range" data-k="jump" min="0.12" max="0.6" step="0.01"><span></span></label>
     <label>Voie <input type="range" data-k="lane" min="0.2" max="1" step="0.01"><span></span></label>
@@ -238,11 +332,22 @@
         <option value="squat">squat seulement</option>
       </select>
     </label>
+    <h3>Écran</h3>
+    <label>Tremblement <input type="range" id="shake" min="0" max="1" step="0.05"><span></span></label>
+    <label>Graphismes
+      <select id="quality">
+        <option value="auto">auto (s'adapte à l'appareil)</option>
+        <option value="3">haute : contours + ombres</option>
+        <option value="2">moyenne : ombres</option>
+        <option value="1">basse</option>
+        <option value="0">très basse</option>
+      </select>
+    </label>
   </div>
 </div>
-<video id="video" playsinline muted></video>
+<video id="video" playsinline muted autoplay></video>
 
-<script src="vendor/mqtt.min.js?v=5"></script>
-<script type="module" src="js/main.js?v=5"></script>
+<script src="vendor/mqtt.min.js?v=10"></script>
+<script type="module" src="js/main.js?v=10"></script>
 </body>
 </html>
