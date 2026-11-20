@@ -2,7 +2,7 @@
 // Il ne sait rien de la caméra : on le pilote avec setLane / jump / roll / setRunning.
 import * as THREE from '../vendor/three.module.js';
 import { clone as cloneSkinned } from '../vendor/addons/utils/SkeletonUtils.js';
-import { buildCartoonCity, toon, OUTLINE, addOutline, TOON } from './cartoon.js?v=11';
+import { buildCartoonCity, toon, OUTLINE, addOutline, TOON } from './cartoon.js?v=13';
 
 const LANE_W = 2.4;
 const SPAWN_Z = -120;
@@ -135,10 +135,12 @@ export class Game {
     this.resetRun();
     this.resize();
     addEventListener('resize', () => this.resize());
+    addEventListener('orientationchange', () => setTimeout(() => this.resize(), 250));
   }
 
   resize() {
-    const w = innerWidth, h = innerHeight;
+    const el = this.renderer.domElement;
+    const w = el.clientWidth || innerWidth, h = el.clientHeight || innerHeight;
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     // Téléphone en portrait : l'écran est étroit, on recule et on monte la caméra et on élargit
@@ -243,7 +245,7 @@ export class Game {
     if (!this.ghost || !this.ghost.group.visible) return null;
     const v = new THREE.Vector3(this.ghost.px, 2.7 + (this.ghostState?.py || 0), this.ghost.z).project(this.camera);
     if (v.z > 1) return null;
-    return { x: ((v.x + 1) / 2) * innerWidth, y: ((1 - v.y) / 2) * innerHeight };
+    return { x: ((v.x + 1) / 2) * this.renderer.domElement.clientWidth, y: ((1 - v.y) / 2) * this.renderer.domElement.clientHeight };
   }
 
   resetRun(seed = (Math.random() * 2 ** 32) >>> 0) {

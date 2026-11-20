@@ -1,9 +1,9 @@
 // Subway Sport Duo : caméra -> pose -> détecteur -> jeu, plus la liaison avec l'autre joueur.
-import { Game } from './game.js?v=11';
-import { loadAssets } from './assets.js?v=11';
-import { MotionDetector, DEFAULTS } from './motion.js?v=11';
-import { Net, newCode, cleanCode } from './net.js?v=11';
-import { Voice, opusSupported } from './voice.js?v=11';
+import { Game } from './game.js?v=13';
+import { loadAssets } from './assets.js?v=13';
+import { MotionDetector, DEFAULTS } from './motion.js?v=13';
+import { Net, newCode, cleanCode } from './net.js?v=13';
+import { Voice, opusSupported } from './voice.js?v=13';
 import { PoseLandmarker, FilesetResolver } from '../vendor/vision_bundle.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -28,7 +28,7 @@ const COUNTDOWN = 3;
 const RUN_TIMEOUT = 1.1; // sans petit saut pendant ce temps, le personnage s'arrête
 const CADENCE_NORMAL = 2.6, PACE_PER_HOP = 0.45, PACE_MIN = 0.5, PACE_MAX = 1.6;
 const SEND_EVERY = 1 / 12; // état envoyé à l'adversaire 12 fois par seconde
-const AVA = (c) => `icones/perso-${c === 'fille' ? 'fille' : 'garcon'}.png?v=11`; // portraits des personnages
+const AVA = (c) => `icones/perso-${c === 'fille' ? 'fille' : 'garcon'}.png?v=13`; // portraits des personnages
 const ic = (n, cls = '') => `<svg class="ic ${cls}"><use href="#i-${n}"/></svg>`;
 // Change le contenu d'un élément seulement s'il a changé (le HUD est mis à jour à chaque image).
 const setText = (el, v) => el.textContent !== String(v) && (el.textContent = v);
@@ -41,7 +41,7 @@ const detector = new MotionDetector({ ...DEFAULTS, ...load('subway-sport-cfg', {
 // Modèles 3D : si le chargement rate (réseau…), le jeu repart avec les anciens personnages en cubes.
 let assets = null;
 try {
-  assets = await loadAssets('?v=11');
+  assets = await loadAssets('?v=13');
 } catch (e) {
   console.warn('Modèles 3D non chargés, retour aux cubes :', e);
 }
@@ -936,3 +936,6 @@ else {
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost'))
   navigator.serviceWorker.register('sw.js').catch(() => {});
 frame();
+
+// Pas de rebond / défilement de la page sur iPhone (sauf dans les menus qui défilent).
+addEventListener('touchmove', (e) => { if (!e.target.closest?.('.overlay, .feuille')) e.preventDefault(); }, { passive: false });

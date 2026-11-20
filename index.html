@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Subway Sport Duo</title>
 <!-- Appli iPhone / Android : « Ajouter à l'écran d'accueil » -->
-<link rel="manifest" href="manifest.webmanifest?v=12">
-<link rel="icon" href="icones/icone-192.png?v=12" type="image/png">
-<link rel="apple-touch-icon" sizes="180x180" href="icones/apple-touch-icon.png?v=12">
+<link rel="manifest" href="manifest.webmanifest?v=13">
+<link rel="icon" href="icones/icone-192.png?v=13" type="image/png">
+<link rel="apple-touch-icon" sizes="180x180" href="icones/apple-touch-icon.png?v=13">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Subway Duo">
@@ -45,11 +45,12 @@
     --relief: 0 5px 0 var(--encre);
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #8fd3ff; color: var(--encre);
+  html, body { margin: 0; position: fixed; inset: 0; width: 100%; height: 100%; overflow: hidden; background: #8fd3ff; color: var(--encre);
     font-family: var(--texte); font-weight: 500; user-select: none; -webkit-user-select: none;
     -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%;
     overscroll-behavior: none; touch-action: none; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #game { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  @supports (height: 100dvh) { #game { height: 100dvh; } }
   button, input, select { font: inherit; color: inherit; }
   input, select { user-select: text; -webkit-user-select: text; }
   button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; cursor: pointer; }
@@ -370,14 +371,14 @@
 <canvas id="game"></canvas>
 
 <div id="hud" class="hud">
-  <div class="nom"><img id="meAva" src="icones/perso-garcon.png?v=11" alt=""><span id="meWho">Moi</span></div>
+  <div class="nom"><img id="meAva" src="icones/perso-garcon.png?v=13" alt=""><span id="meWho">Moi</span></div>
   <div class="score cerne" id="score">0</div>
   <div class="puces"><span class="puce" id="speed"></span><span class="puce" id="sub"></span></div>
   <div class="lives" id="lives"></div>
 </div>
 
 <div id="opp" class="hud">
-  <div class="nom"><img id="oppAva" src="icones/perso-fille.png?v=11" alt=""><span id="oppWho">Adversaire</span><svg class="ic" id="oppMic"><use href="#i-mic-off"/></svg></div>
+  <div class="nom"><img id="oppAva" src="icones/perso-fille.png?v=13" alt=""><span id="oppWho">Adversaire</span><svg class="ic" id="oppMic"><use href="#i-mic-off"/></svg></div>
   <div class="score cerne" id="oppScore">0</div>
   <div class="puces"><span class="puce" id="oppState">En attente</span></div>
   <div class="puces"><span class="puce" id="oppGap"></span></div>
@@ -410,8 +411,8 @@
         <div class="field">
           <span class="lab">Ton personnage</span>
           <div class="persos" id="charChoice">
-            <button type="button" class="choice perso" data-char="garcon" aria-pressed="true"><img src="icones/perso-garcon.png?v=11" alt=""><span>Garçon</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
-            <button type="button" class="choice perso" data-char="fille" aria-pressed="false"><img src="icones/perso-fille.png?v=11" alt=""><span>Fille</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
+            <button type="button" class="choice perso" data-char="garcon" aria-pressed="true"><img src="icones/perso-garcon.png?v=13" alt=""><span>Garçon</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
+            <button type="button" class="choice perso" data-char="fille" aria-pressed="false"><img src="icones/perso-fille.png?v=13" alt=""><span>Fille</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
           </div>
         </div>
       </div>
@@ -529,7 +530,7 @@
 
 <video id="video" playsinline muted autoplay></video>
 
-<script src="vendor/mqtt.min.js?v=11"></script>
-<script type="module" src="js/main.js?v=11"></script>
+<script src="vendor/mqtt.min.js?v=13"></script>
+<script type="module" src="js/main.js?v=13"></script>
 </body>
 </html>
