@@ -22,7 +22,13 @@ L'appli s'ouvre alors en plein écran, avec son icône (`icones/`, `manifest.web
   te mettre prêt) ou **au doigt** (bouton « Jouer au doigt » : glisser ⬅️ ➡️ = voie, ⬆️ = saut, ⬇️ = roulade, le personnage court tout seul).
 - Le code de la partie s'affiche en gros, avec « Envoyer le lien » (feuille de partage : Messages, WhatsApp…).
   Depuis l'appli de l'écran d'accueil, un lien reçu s'ouvre dans Safari : on peut aussi taper le code dans l'appli.
-- Boutons en bas à gauche : micro, caméra (aperçu), ⚙️ réglages (sensibilité, tremblement, graphismes).
+- Pendant la course, boutons en bas à gauche : micro, caméra (aperçu), réglages (sensibilité, tremblement, graphismes)
+  et **Quitter** (rouge). Sur les écrans de partie, les mêmes boutons sont en haut du panneau (✕ = quitter).
+- **Quitter la partie** (confirmation demandée) : retour à l'accueil ; l'adversaire est prévenu tout de suite (message
+  `bye`, `Net.stop`) et reste dans la salle, où il peut attendre quelqu'un d'autre. Au clavier : Échap.
+- Habillage des menus façon jeu mobile : boutons en relief cernés d'encre, panneaux blancs, polices Lilita One
+  (titres) et Fredoka (textes) dans `fonts/`, icônes dessinées en SVG dans `index.html`, portraits des personnages
+  rendus depuis les modèles 3D (`icones/perso-*.png`).
 - Portrait (conseillé) ou paysage ; en portrait la caméra du jeu recule pour montrer les 3 voies (`Game.resize`).
 - L'écran reste allumé pendant la partie (Wake Lock) ; au retour dans l'appli, caméra et son repartent.
 - `sw.js` garde sur le téléphone les gros fichiers (modèle de pose, moteur wasm ~15 Mo, modèles 3D) : démarrage

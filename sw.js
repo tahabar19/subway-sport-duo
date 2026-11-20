@@ -2,7 +2,7 @@
 // Page et code : réseau d'abord (toujours la dernière version), le cache sert hors ligne.
 // Gros fichiers qui ne changent pas (modèle de pose ~6 Mo, moteur wasm ~9 Mo, modèles 3D, Three.js) :
 // cache d'abord, pour que l'appli démarre vite sur le téléphone après la première fois.
-const VERSION = 'subway-duo-10';
+const VERSION = 'subway-duo-11';
 const LOURD = 'subway-duo-lourd-1'; // à changer seulement si un fichier de vendor/ ou assets/ change
 
 self.addEventListener('install', () => self.skipWaiting());
@@ -16,7 +16,7 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const u = new URL(e.request.url);
   if (e.request.method !== 'GET' || u.origin !== location.origin) return;
-  if (/\/(vendor|assets|icones)\//.test(u.pathname)) {
+  if (/\/(vendor|assets|icones|fonts)\//.test(u.pathname)) {
     e.respondWith(
       caches.open(LOURD).then((c) =>
         c.match(e.request).then(

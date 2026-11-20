@@ -62,6 +62,7 @@ export class Net {
         keepalive: 20,
       });
       c.on('connect', () => {
+        if (this.topic !== topic) return; // partie quittée entre-temps
         c.subscribe(topic, { qos: 0 });
         if (!anyUp) {
           anyUp = true;
@@ -69,14 +70,37 @@ export class Net {
         }
         this.ping();
       });
-      c.on('message', (_t, payload) => this.receive(payload));
+      c.on('message', (_t, payload) => this.topic === topic && this.receive(payload));
       c.on('error', () => {});
       return c;
     });
     this.topic = topic;
     // Aucun serveur joignable au bout de 10 s : on le dit (les essais continuent).
-    setTimeout(() => !anyUp && this.onStatus('erreur', 'Serveur de jeu injoignable, nouvel essai…'), 10000);
+    setTimeout(() => !anyUp && this.topic === topic && this.onStatus('erreur', 'Serveur de jeu injoignable, nouvel essai…'), 10000);
     this.timer = setInterval(() => this.tick(), PING_EVERY);
+  }
+
+  // Quitter la salle. Les connexions restent ouvertes une seconde pour que le « bye » envoyé
+  // juste avant ait le temps de partir ; ce qui arrive de l'ancienne salle entre-temps est ignoré.
+  stop() {
+    clearInterval(this.timer);
+    this.timer = null;
+    const old = this.clients;
+    setTimeout(() => {
+      for (const c of old) {
+        try {
+          c.end(false);
+        } catch {}
+      }
+    }, 1000);
+    this.clients = [];
+    this.partner = null;
+    this.topic = null;
+    this.code = null;
+    this.seen = new Set();
+    this.lastSeq = {};
+    this.gone = null;
+    this.id = randomId(); // nouvel identifiant pour la prochaine partie
   }
 
   ping() {
@@ -106,7 +130,7 @@ export class Net {
     } catch {
       return;
     }
-    if (!m || typeof m !== 'object' || typeof m.from !== 'string' || m.from === this.id) return;
+    if (!m || typeof m !== 'object' || typeof m.from !== 'string' || m.from === this.id || m.from === this.gone) return;
     const key = m.from + ':' + m.seq;
     if (this.seen.has(key)) return;
     this.seen.add(key);
@@ -124,6 +148,13 @@ export class Net {
     if (m.from !== this.partner) return;
     this.partnerSeen = Date.now();
     if (m.t === 'ping') return;
+    if (m.t === 'bye') {
+      // L'autre a quitté la partie : on le sait tout de suite, sans attendre 6 s de silence.
+      this.gone = m.from; // ses derniers messages encore en route ne le font pas revenir
+      this.partner = null;
+      this.onStatus('perdu', 'quitte');
+      return;
+    }
     if (m.t === 'st' || m.t === 'v') {
       if (m.seq < (this.lastSeq[m.t] || 0)) return; // arrivé en retard par l'autre serveur
       this.lastSeq[m.t] = m.seq;

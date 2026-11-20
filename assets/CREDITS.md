@@ -11,3 +11,6 @@
 
 Ville cartoon (immeubles, graffitis, arbres, ciel) : générée en code, sans modèle.
 Chargeur et halo : three.js r160 `GLTFLoader`, `SkeletonUtils`, `BufferGeometryUtils` (MIT), dans `vendor/addons/`.
+
+Polices (menus) : Lilita One (Juan Montoreano) et Fredoka (Milena Brandão, Hafontia), licence SIL Open Font License 1.1, dans `fonts/`.
+Portraits des menus (`icones/perso-*.png`) : rendus des modèles garcon.glb et fille.glb (animation « Wave »).

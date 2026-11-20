@@ -1,9 +1,9 @@
 // Subway Sport Duo : caméra -> pose -> détecteur -> jeu, plus la liaison avec l'autre joueur.
-import { Game } from './game.js?v=10';
-import { loadAssets } from './assets.js?v=10';
-import { MotionDetector, DEFAULTS } from './motion.js?v=10';
-import { Net, newCode, cleanCode } from './net.js?v=10';
-import { Voice, opusSupported } from './voice.js?v=10';
+import { Game } from './game.js?v=11';
+import { loadAssets } from './assets.js?v=11';
+import { MotionDetector, DEFAULTS } from './motion.js?v=11';
+import { Net, newCode, cleanCode } from './net.js?v=11';
+import { Voice, opusSupported } from './voice.js?v=11';
 import { PoseLandmarker, FilesetResolver } from '../vendor/vision_bundle.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -28,7 +28,12 @@ const COUNTDOWN = 3;
 const RUN_TIMEOUT = 1.1; // sans petit saut pendant ce temps, le personnage s'arrête
 const CADENCE_NORMAL = 2.6, PACE_PER_HOP = 0.45, PACE_MIN = 0.5, PACE_MAX = 1.6;
 const SEND_EVERY = 1 / 12; // état envoyé à l'adversaire 12 fois par seconde
-const EMOJI = { garcon: '👦', fille: '👧' };
+const AVA = (c) => `icones/perso-${c === 'fille' ? 'fille' : 'garcon'}.png?v=11`; // portraits des personnages
+const ic = (n, cls = '') => `<svg class="ic ${cls}"><use href="#i-${n}"/></svg>`;
+// Change le contenu d'un élément seulement s'il a changé (le HUD est mis à jour à chaque image).
+const setText = (el, v) => el.textContent !== String(v) && (el.textContent = v);
+const setHTML = (el, v) => el._h !== v && ((el._h = v), (el.innerHTML = v));
+const hearts = (n) => ic('coeur', 'plein-coeur').repeat(Math.max(0, n));
 // Téléphone / tablette : pas de clavier, on joue au doigt (glisser) ou avec la caméra.
 const TOUCH = matchMedia('(hover: none) and (pointer: coarse)').matches || navigator.maxTouchPoints > 0;
 
@@ -36,7 +41,7 @@ const detector = new MotionDetector({ ...DEFAULTS, ...load('subway-sport-cfg', {
 // Modèles 3D : si le chargement rate (réseau…), le jeu repart avec les anciens personnages en cubes.
 let assets = null;
 try {
-  assets = await loadAssets('?v=10');
+  assets = await loadAssets('?v=11');
 } catch (e) {
   console.warn('Modèles 3D non chargés, retour aux cubes :', e);
 }
@@ -125,9 +130,11 @@ async function applyMic() {
     voice.setMic(false);
     toast('Micro refusé ou introuvable');
   }
-  $('micBtn').textContent = me.mic ? '🎤 Micro' : '🔇 Micro';
-  $('micBtn').setAttribute('aria-label', me.mic ? 'Micro activé (toucher pour couper)' : 'Micro coupé (toucher pour activer)');
-  $('micBtn').classList.toggle('live', me.mic);
+  for (const b of [$('micBtn'), $('micBtn2')]) {
+    setHTML(b, ic(me.mic ? 'mic' : 'mic-off'));
+    b.setAttribute('aria-label', me.mic ? 'Micro activé (toucher pour couper)' : 'Micro coupé (toucher pour activer)');
+    b.classList.toggle('live', me.mic);
+  }
   net.send({ t: 'mic', on: me.mic });
   store('subway-duo-me', { name: me.name, char: me.char, mic: me.mic });
 }
@@ -136,6 +143,7 @@ function toggleMic() {
   applyMic();
 }
 $('micBtn').addEventListener('click', toggleMic);
+$('micBtn2').addEventListener('click', toggleMic);
 
 // ---- Liaison avec l'adversaire
 net.onStatus = (s, detail) => {
@@ -143,18 +151,22 @@ net.onStatus = (s, detail) => {
   room.classList.add('on');
   room.classList.toggle('ok', s === 'connecte');
   if (s === 'connecte') {
-    $('roomText').textContent = `${net.code} · connecté`;
+    $('roomText').textContent = net.code;
     sendHello();
   } else if (s === 'attente') {
-    $('roomText').textContent = `${net.code} · en attente`;
+    $('roomText').textContent = net.code;
   } else if (s === 'perdu') {
-    $('roomText').textContent = `${net.code} · déconnecté`;
-    if (opp) toast(`${oppName()} s'est déconnecté(e)`);
+    $('roomText').textContent = net.code;
+    if (opp) toast(detail === 'quitte' ? `${oppName()} a quitté la partie` : `${oppName()} s'est déconnecté(e)`);
     opp = null;
     game.setGhost(null);
     game.ghostState = null;
+    // Parti pour de bon : celui qui reste tient la salle et choisit les cœurs pour le prochain adversaire.
+    if (detail === 'quitte') isCreator = true;
+    renderLives();
   } else if (s === 'erreur') {
-    $('roomText').textContent = `${net.code} · ${detail}`;
+    $('roomText').textContent = net.code;
+    toast(detail);
     if (phase === 'lobby') $('lobbyErr').textContent = detail;
   }
 };
@@ -172,7 +184,7 @@ net.onMessage = (m) => {
     opp.phase = String(m.phase || 'ready');
     game.setGhost(opp.char);
     if (fresh) {
-      toast(`${EMOJI[opp.char]} ${opp.name} est là !`);
+      toast(`${opp.name} est là !`);
       beep(660, 0.12, 'triangle', 0.08);
     }
     if (m.cr === true && !isCreator) setLives(m.lives, false);
@@ -183,7 +195,7 @@ net.onMessage = (m) => {
   if (!opp) return;
   if (m.t === 'phase') {
     opp.phase = String(m.phase);
-    if (m.phase === 'waiting' && phase !== 'play') toast(`${oppName()} est prêt(e) ✅`);
+    if (m.phase === 'waiting' && phase !== 'play') toast(`${oppName()} est prêt(e) !`);
   } else if (m.t === 'mic') opp.mic = !!m.on;
   else if (m.t === 'lives' && !isCreator) setLives(m.n, false);
   else if (m.t === 'st') {
@@ -197,13 +209,13 @@ net.onMessage = (m) => {
     };
     opp.stAt = now();
   } else if (m.t === 'hit') {
-    toast(`💥 ${oppName()} ${m.what === 'train' ? "s'est pris un train" : "s'est cogné(e)"} !`);
+    toast(`${oppName()} ${m.what === 'train' ? "s'est pris un train" : "s'est cogné(e)"} !`);
     if (phase === 'watch') (game.addTrauma(m.what === 'train' ? 0.7 : 0.45), beep(110, 0.3, 'sawtooth', 0.06));
   } else if (m.t === 'over') {
     const wasOver = opp.final !== null;
     opp.final = Math.max(0, Math.round(Number(m.score) || 0));
     opp.alive = false;
-    if (phase === 'play' && !wasOver) toast(`☠️ ${oppName()} est éliminé(e) avec ${opp.final} — dépasse ce score !`, 4);
+    if (phase === 'play' && !wasOver) toast(`${oppName()} est éliminé(e) avec ${opp.final} — dépasse ce score !`, 4);
   } else if (m.t === 'start' && !net.isHost) {
     // L'hôte donne le départ, avec la graine du parcours commun.
     if (phase === 'waiting' || phase === 'over' || phase === 'ready') {
@@ -245,12 +257,15 @@ function setPhase(p) {
   phaseStart = now();
   holdTime = 0;
   $('lobby').classList.toggle('hidden', p !== 'lobby' && p !== 'loading');
-  $('tools').classList.toggle('cache', p === 'lobby' || p === 'loading');
+  $('tools').classList.toggle('cache', p !== 'play' && p !== 'watch' && p !== 'countdown');
+  document.body.dataset.phase = p; // le CSS cache le score et la salle derrière les menus
   $('panel').classList.toggle('hidden', p === 'play' || p === 'watch' || p === 'lobby' || p === 'loading');
   $('livesRow').style.display = p === 'ready' || p === 'waiting' || p === 'over' ? '' : 'none';
   $('watch').classList.toggle('on', p === 'watch');
-  $('moves').style.display = p === 'ready' || p === 'calib' ? '' : 'none';
-  $('msg').classList.toggle('big', p === 'countdown');
+  // Les mouvements du corps ne s'affichent que si la caméra est là (ou en train de charger).
+  $('moves').style.display = (p === 'ready' || p === 'calib') && (camOk || camLoading) ? '' : 'none';
+  $('panel').classList.toggle('decompte', p === 'countdown');
+  $('resultat').classList.toggle('on', p === 'over');
   if (p === 'calib') detector.startCalibration();
   if (p === 'play') {
     lastActivity = now();
@@ -287,22 +302,21 @@ function pick(groupId, attr, value) {
 }
 $('name').value = me.name;
 pick('charChoice', 'char', me.char);
-pick('micChoice', 'mic', me.mic ? '1' : '0');
+$('micSwitch').setAttribute('aria-pressed', String(me.mic));
 $('charChoice').addEventListener('click', (e) => {
   const b = e.target.closest('.choice');
   if (!b) return;
   me.char = b.dataset.char;
   pick('charChoice', 'char', me.char);
   game.setCharacter(me.char);
+  $('meAva').src = AVA(me.char);
 });
-$('micChoice').addEventListener('click', (e) => {
-  const b = e.target.closest('.choice');
-  if (!b) return;
-  me.mic = b.dataset.mic === '1';
-  pick('micChoice', 'mic', b.dataset.mic);
+$('micSwitch').addEventListener('click', () => {
+  me.mic = !me.mic;
+  $('micSwitch').setAttribute('aria-pressed', String(me.mic));
 });
 const params = new URLSearchParams(location.search);
-const linkCode = cleanCode(params.get('salle'));
+let linkCode = cleanCode(params.get('salle'));
 if (linkCode) {
   $('hostOrJoin').style.display = 'none';
   $('joinOnly').style.display = 'block';
@@ -335,29 +349,24 @@ $('lobbyForm').addEventListener('submit', async (e) => {
 // Code de la partie, en gros, et bouton pour l'envoyer (feuille de partage de l'iPhone : Messages, WhatsApp…).
 function renderShare(code, link) {
   const box = $('share');
-  box.innerHTML = '';
-  const label = document.createElement('span');
-  label.textContent = 'Code à donner à ton adversaire';
-  const big = document.createElement('span');
-  big.className = 'code';
-  big.textContent = code;
+  box.innerHTML = `<span class="lab">Code à donner à ton adversaire</span><div class="tuiles">${[...code].map((c) => `<i>${c}</i>`).join('')}</div>`;
   const send = document.createElement('button');
   send.type = 'button';
-  send.className = 'btn alt';
-  send.textContent = navigator.share ? '📤 Envoyer le lien' : '📋 Copier le lien';
+  send.className = 'btn bleu petit';
+  send.innerHTML = navigator.share ? ic('partager') + 'Envoyer le lien' : ic('copier') + 'Copier le lien';
   send.onclick = async () => {
     if (navigator.share) {
       try {
         await navigator.share({ title: 'Subway Duo', text: `Viens jouer à Subway Duo avec moi ! Code : ${code}`, url: link });
       } catch {}
     } else {
-      navigator.clipboard?.writeText(link).then(() => (send.textContent = 'Lien copié ✓'));
+      navigator.clipboard?.writeText(link).then(() => (send.innerHTML = ic('check') + 'Lien copié'));
     }
   };
   const small = document.createElement('span');
   small.className = 'link';
   small.textContent = link;
-  box.append(label, big, send, small);
+  box.append(send, small);
 }
 
 // ---- Écran allumé pendant la partie (on joue loin du téléphone, sans le toucher)
@@ -479,14 +488,14 @@ const oppAlive = () => !!opp && opp.alive && opp.phase === 'play';
 function resultText() {
   const a = myFinal, b = oppScoreNow();
   if (!opp || solo) return `Score ${a} · record ${game.best}`;
-  if (oppAlive()) return `Éliminé(e) avec ${a}.\n${EMOJI[opp.char]} ${opp.name} court encore : ${b}…`;
+  if (oppAlive()) return `Éliminé(e) avec ${a}.\n${opp.name} court encore : ${b}…`;
   if (!resultCounted) {
     resultCounted = true;
     if (a > b) wins.me++;
     else if (b > a) wins.opp++;
     beep(a >= b ? 990 : 330, 0.35, 'triangle', 0.09);
   }
-  const head = a > b ? `🏆 Tu gagnes ${a} à ${b} !` : b > a ? `${opp.name} gagne ${b} à ${a}` : `Égalité ${a} partout !`;
+  const head = a > b ? `Tu gagnes ${a} à ${b} !` : b > a ? `${opp.name} gagne ${b} à ${a}` : `Égalité ${a} partout !`;
   return `${head}\nVictoires : toi ${wins.me} – ${wins.opp} ${opp.name}`;
 }
 
@@ -495,8 +504,8 @@ let actsKey = '';
 function renderActs() {
   const list = [];
   const canRestart = phase === 'ready' || (phase === 'over' && !oppAlive());
-  if (canRestart) list.push(['touch', TOUCH ? '📱 ' + (phase === 'over' ? 'Rejouer' : 'Jouer') + ' au doigt' : '⌨️ Jouer au clavier', '']);
-  if (phase === 'waiting' && (!opp || !net.connected)) list.push(['solo', '🏃 Jouer seul en attendant', 'alt']);
+  if (canRestart) list.push(['touch', (TOUCH ? ic('doigt') : ic('jouer', 'plein')) + (phase === 'over' ? 'Rejouer' : 'Jouer') + (TOUCH ? ' au doigt' : ' au clavier'), '']);
+  if (phase === 'waiting' && (!opp || !net.connected)) list.push(['solo', ic('jouer', 'plein') + 'Jouer seul en attendant', 'bleu']);
   const key = list.map((a) => a[0] + a[1]).join('|');
   if (key === actsKey) return;
   actsKey = key;
@@ -506,7 +515,7 @@ function renderActs() {
       b.type = 'button';
       b.className = 'btn ' + cls;
       b.dataset.act = act;
-      b.textContent = text;
+      b.innerHTML = text;
       return b;
     }),
   );
@@ -521,8 +530,35 @@ $('acts').addEventListener('click', (e) => {
   } else if (act === 'solo' && phase === 'waiting' && (!opp || !net.connected)) startCountdown((Math.random() * 2 ** 32) >>> 0);
 });
 
+const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+function resultHTML() {
+  const card = (name, char, pts, sub, win) =>
+    `<div class="res${win ? ' gagne' : ''}">${win ? '<span class="badge">Gagnant</span>' : ''}<img src="${AVA(char)}" alt="">` +
+    `<span class="n">${esc(name)}</span><span class="pts cerne">${pts}</span><span class="sous">${sub}</span></div>`;
+  const a = myFinal;
+  if (!opp || solo) return card(me.name || 'Moi', me.char, a, a > 0 && a >= game.best ? 'Nouveau record !' : `record ${game.best}`, false);
+  const b = oppScoreNow(), live = oppAlive();
+  return card('Toi', me.char, a, 'éliminé(e)', !live && a > b) + card(opp.name, opp.char, b, live ? 'court encore…' : 'éliminé(e)', !live && b > a);
+}
+
+function panelTitle() {
+  if (phase === 'calib') return 'Calibrage';
+  if (phase === 'waiting') return 'Prêt !';
+  if (phase === 'over') {
+    if (!opp || solo) return 'Terminé';
+    if (oppAlive()) return 'Éliminé';
+    const a = myFinal, b = oppScoreNow();
+    return a > b ? 'Gagné !' : b > a ? 'Perdu…' : 'Égalité';
+  }
+  return 'Prêt ?';
+}
+
 function updatePanel(dt, t) {
   renderActs();
+  // Barre de progression : bras levés (avec caméra) et calibrage seulement.
+  const showBar = phase === 'calib' || ((phase === 'ready' || phase === 'over') && (camOk || camLoading));
+  if ($('bar').hidden === showBar) $('bar').hidden = !showBar;
+  setText($('cardTitle'), panelTitle());
   const msg = $('msg'), bar = $('bar').firstElementChild;
   const handsUp = MotionDetector.handsUp(measure);
   if (phase === 'ready' || phase === 'over') {
@@ -533,14 +569,21 @@ function updatePanel(dt, t) {
       ? camLoading
         ? 'Chargement de la caméra…'
         : TOUCH
-          ? 'Pas de caméra : joue au doigt 👇'
+          ? 'Pas de caméra : joue au doigt.'
           : 'Pas de caméra : appuie sur Entrée pour jouer au clavier.'
       : measure
-        ? `Lève les deux bras pour ${phase === 'over' ? 'la revanche' : 'te mettre prêt(e)'} 🙌`
+        ? `Lève les deux bras pour ${phase === 'over' ? 'la revanche' : 'te mettre prêt(e)'} !`
         : TOUCH
           ? 'Pose le téléphone debout et recule à 2–3 m :\non doit te voir en entier, de la tête aux pieds.'
           : 'Recule à 2–3 m de la caméra :\non doit te voir en entier, de la tête aux pieds.';
-    if (phase === 'over') msg.textContent = oppAlive() ? resultText() : `${resultText()}\n${how}`;
+    if (phase === 'over') {
+      resultText(); // compte la victoire (une seule fois) et joue le son du résultat
+      setHTML($('resultat'), resultHTML());
+      const duoDone = opp && !solo && !oppAlive();
+      msg.textContent = oppAlive()
+        ? `${opp.name} court encore…`
+        : [duoDone ? `Victoires : toi ${wins.me} – ${wins.opp} ${opp.name}` : '', camOk ? how : ''].filter(Boolean).join('\n');
+    }
     else msg.textContent = how;
     if (holdTime >= HOLD_TO_START) setPhase('calib');
   } else if (phase === 'calib') {
@@ -567,9 +610,9 @@ function updatePanel(dt, t) {
   } else if (phase === 'waiting') {
     bar.style.width = '0%';
     if (!opp || !net.connected)
-      msg.textContent = `Prêt(e) ✅\nEn attente de ton adversaire…${TOUCH ? '' : '\n(Entrée = jouer seul en attendant)'}`;
-    else if (opp.phase === 'play') msg.textContent = `Prêt(e) ✅\n${opp.name} finit sa partie : ${oppScoreNow()}…`;
-    else if (opp.phase !== 'waiting') msg.textContent = `Prêt(e) ✅\nEn attente de ${opp.name}…`;
+      msg.textContent = `En attente de ton adversaire…${TOUCH ? '' : '\n(Entrée = jouer seul en attendant)'}`;
+    else if (opp.phase === 'play') msg.textContent = `${opp.name} finit sa partie : ${oppScoreNow()}…`;
+    else if (opp.phase !== 'waiting') msg.textContent = `En attente de ${opp.name}…`;
     else msg.textContent = 'Départ…';
     // L'hôte donne le départ quand les deux sont prêts.
     if (net.isHost && opp && net.connected && opp.phase === 'waiting') {
@@ -591,17 +634,17 @@ function updatePanel(dt, t) {
 }
 
 function updateHud(t) {
-  $('meWho').textContent = `${EMOJI[me.char]} ${me.name || 'Moi'}`;
+  setText($('meWho'), me.name || 'Moi');
   const done = phase === 'watch' || phase === 'over';
-  $('score').textContent = done ? myFinal : game.score;
-  $('sub').textContent = done ? `record ${game.best}` : `🪙 ${game.coinCount} · record ${Math.max(game.best, game.score)}`;
-  $('speed').textContent = done ? '☠️ éliminé(e)' : `⚡ ${Math.round(game.speed * 3.6)} km/h`;
+  setText($('score'), done ? myFinal : game.score);
+  setHTML($('sub'), done ? `record ${game.best}` : `<i class="piece"></i>${game.coinCount} · record ${Math.max(game.best, game.score)}`);
+  setHTML($('speed'), done ? 'éliminé(e)' : `${ic('eclair', 'plein')}${Math.round(game.speed * 3.6)} km/h`);
   const a = game.run;
-  $('speed').style.color = done || a < 0.75 ? '#ffffff' : a < 0.95 ? '#4be37a' : a < 1.2 ? '#ff9f1a' : '#ff3b30';
-  $('lives').textContent = done ? '' : '❤'.repeat(Math.max(0, game.lives));
-  if (phase === 'watch' && opp) $('watchText').textContent = `👀 Tu regardes ${opp.name} · ${oppScoreNow()} — toi : ${myFinal}`;
+  $('speed').style.background = done || a < 0.75 ? '' : a < 0.95 ? '#1fae6b' : a < 1.2 ? '#f08c00' : '#e8392b';
+  setHTML($('lives'), done ? '' : hearts(game.lives));
+  if (phase === 'watch' && opp) setText($('watchText'), `Tu regardes ${opp.name} : ${oppScoreNow()} — toi : ${myFinal}`);
   const stopped = phase === 'play' && !keyboard && t - lastActivity > RUN_TIMEOUT;
-  $('hint').textContent = measure ? 'Sautille pour avancer !' : TOUCH ? 'Je ne te vois plus — reviens dans le cadre (ou glisse du doigt)' : 'Je ne te vois plus — reviens dans le cadre';
+  setText($('hint'), measure ? 'Sautille pour avancer !' : 'Reviens dans le cadre !');
   $('hint').classList.toggle('on', stopped);
 
   $('share').classList.toggle('on', (phase === 'ready' || phase === 'waiting') && !opp && !!net.code);
@@ -609,19 +652,29 @@ function updateHud(t) {
   // Adversaire, à droite
   const box = $('opp');
   if (!opp) {
-    $('oppWho').textContent = '… adversaire';
-    $('oppScore').textContent = '—';
-    $('oppLives').textContent = '';
-    $('oppState').textContent = net.connected ? 'Connexion…' : 'Pas encore là';
-    $('oppGap').textContent = '';
+    setText($('oppWho'), 'Adversaire');
+    $('oppAva').style.display = 'none';
+    setText($('oppScore'), '—');
+    setHTML($('oppLives'), '');
+    setText($('oppState'), net.connected ? 'Connexion…' : 'Pas encore là');
+    setText($('oppGap'), '');
+    $('oppMic').style.display = 'none';
     box.classList.remove('out');
   } else {
-    $('oppWho').textContent = `${voice?.remoteTalking ? '🗣️ ' : opp.mic ? '🎤 ' : '🔇 '}${opp.name} ${EMOJI[opp.char]}`;
+    setText($('oppWho'), opp.name);
+    $('oppAva').style.display = '';
+    const ava = AVA(opp.char);
+    if (!$('oppAva').src.endsWith(ava)) $('oppAva').src = ava;
+    $('oppMic').style.display = '';
+    const micIcon = '#i-' + (opp.mic ? 'mic' : 'mic-off');
+    const use = $('oppMic').firstElementChild;
+    if (use.getAttribute('href') !== micIcon) use.setAttribute('href', micIcon);
+    $('oppMic').classList.toggle('parle', !!voice?.remoteTalking);
     $('micBtn').classList.toggle('talk', !!voice?.talking);
-    $('oppScore').textContent = oppScoreNow();
-    $('oppLives').textContent = '❤'.repeat(opp.final !== null ? 0 : (opp.st?.lives ?? lives));
-    $('oppState').textContent =
-      { ready: 'Se prépare', calib: 'Calibrage…', waiting: 'Prêt(e) ✅', countdown: 'Départ…', play: 'En course 🏃', over: 'Éliminé(e)', lobby: 'Accueil' }[opp.phase] || '';
+    setText($('oppScore'), oppScoreNow());
+    setHTML($('oppLives'), hearts(opp.final !== null ? 0 : (opp.st?.lives ?? lives)));
+    setText($('oppState'),
+      { ready: 'Se prépare', calib: 'Calibrage…', waiting: 'Prêt(e)', countdown: 'Départ…', play: 'En course', over: 'Éliminé(e)', lobby: 'Accueil' }[opp.phase] || '');
     box.classList.toggle('out', opp.final !== null && phase === 'play');
     let gap = '';
     if (phase === 'play' && opp.phase === 'play' && opp.st && !solo) {
@@ -629,9 +682,9 @@ function updateHud(t) {
       gap = d > 2 ? `devant de ${d} m` : d < -2 ? `derrière de ${-d} m` : 'côte à côte';
     } else if (phase === 'play' && opp.final !== null && !solo) {
       const d = opp.final - game.score;
-      gap = d > 0 ? `encore ${d} pts pour gagner` : 'tu mènes ! 🔥';
+      gap = d > 0 ? `encore ${d} pts pour gagner` : 'tu mènes !';
     }
-    $('oppGap').textContent = gap;
+    setText($('oppGap'), gap);
   }
 
   // Fantôme : visible pendant la course, à sa voie, avec son prénom au-dessus.
@@ -640,7 +693,7 @@ function updateHud(t) {
   const tag = $('ghostTag'), pos = showGhost ? game.ghostLabelPos() : null;
   tag.style.display = pos ? 'block' : 'none';
   if (pos) {
-    tag.textContent = `${EMOJI[opp.char]} ${opp.name}`;
+    setText(tag, opp.name);
     tag.style.left = pos.x + 'px';
     tag.style.top = pos.y + 'px';
   }
@@ -675,10 +728,10 @@ game.onEvent = (e, info) => {
   else if (e === 'jump') beep(520, 0.12, 'sine', 0.08);
   else if (e === 'roll') beep(260, 0.12, 'sine', 0.08);
   else if (e === 'daytime') {
-    toast({ 'après-midi': "☀️ L'après-midi", 'coucher de soleil': '🌇 Le soleil se couche', nuit: '🌙 La nuit tombe' }[info] || info);
+    toast({ 'après-midi': "L'après-midi", 'coucher de soleil': 'Le soleil se couche', nuit: 'La nuit tombe' }[info] || info);
   } else if (e === 'quality') {
     const names = ['très basse', 'basse', 'moyenne', 'haute'];
-    toast(`🖥️ Graphismes réglés sur « ${names[info]} » pour rester fluide`);
+    toast(`Graphismes réglés sur « ${names[info]} » pour rester fluide`);
   } else if (e === 'hit') (beep(110, 0.3, 'sawtooth', 0.1), net.send({ t: 'hit', what: info }));
   else if (e === 'over') {
     myFinal = game.score;
@@ -702,7 +755,12 @@ addEventListener('keydown', (e) => {
   if ((k === 'm' || k === 'M') && phase !== 'lobby') return toggleMic();
   if (k === 'r' || k === 'R') return toggleSettings();
   if (k === 'v' || k === 'V') return toggleCam();
-  if (k === 'Escape') return toggleSettings(false);
+  if (k === 'Escape') {
+    if ($('settings').classList.contains('on')) return toggleSettings(false);
+    if ($('confirm').classList.contains('on')) return askQuit(false);
+    if (phase !== 'lobby' && phase !== 'loading') return askQuit(true);
+    return;
+  }
   if (phase !== 'play') return;
   const moves = {
     ArrowLeft: () => game.moveLane(-1),
@@ -726,7 +784,7 @@ addEventListener(
   'touchstart',
   (e) => {
     swipe = null;
-    if (phase !== 'play' || e.touches.length !== 1 || e.target.closest?.('button, input, select, #settings')) return;
+    if (phase !== 'play' || e.touches.length !== 1 || e.target.closest?.('button, input, select, .feuille')) return;
     swipe = { x: e.touches[0].clientX, y: e.touches[0].clientY, done: false };
   },
   { passive: true },
@@ -757,10 +815,58 @@ function toggleCam() {
   $('cam').style.display = $('cam').style.display ? '' : 'none';
 }
 $('setBtn').addEventListener('click', () => toggleSettings());
+$('setBtn2').addEventListener('click', () => toggleSettings());
 $('setClose').addEventListener('click', () => toggleSettings(false));
 $('settings').addEventListener('click', (e) => e.target === $('settings') && toggleSettings(false));
 $('camBtn').addEventListener('click', toggleCam);
-$('micBtn').textContent = me.mic ? '🎤 Micro' : '🔇 Micro';
+
+// ---- Quitter la partie : retour à l'accueil, l'adversaire est prévenu tout de suite.
+function askQuit(on = true) {
+  if (on) {
+    toggleSettings(false);
+    $('confirmText').textContent =
+      phase === 'play' ? 'Ta course s’arrête et tu reviens à l’accueil.' : 'Tu reviens à l’accueil pour créer ou rejoindre une autre partie.';
+  }
+  $('confirm').classList.toggle('on', on);
+}
+function leaveGame() {
+  askQuit(false);
+  toggleSettings(false);
+  net.send({ t: 'bye' });
+  net.stop();
+  voice?.setMic(false);
+  opp = null;
+  solo = false;
+  isCreator = false;
+  keyboard = false;
+  myFinal = 0;
+  wins.me = wins.opp = 0;
+  game.setGhost(null);
+  game.ghostState = null;
+  game.state = 'idle';
+  game.resetRun();
+  game.setCharacter(me.char);
+  $('opp').classList.remove('on', 'out');
+  $('room').classList.remove('on', 'ok');
+  $('micBtn').classList.remove('on');
+  $('share').innerHTML = '';
+  // Retour à l'accueil normal (même si on était arrivé par un lien de partie).
+  linkCode = '';
+  $('hostOrJoin').style.display = '';
+  $('joinOnly').style.display = '';
+  $('code').value = '';
+  const q = new URLSearchParams(location.search);
+  q.delete('salle');
+  history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : ''));
+  wakeLock?.release().catch(() => {});
+  setPhase('lobby');
+}
+for (const id of ['quitBtn', 'quitBtn2']) $(id).addEventListener('click', () => askQuit(true));
+$('confirmYes').addEventListener('click', leaveGame);
+$('confirmNo').addEventListener('click', () => askQuit(false));
+$('confirm').addEventListener('click', (e) => e.target === $('confirm') && askQuit(false));
+setHTML($('micBtn'), ic(me.mic ? 'mic' : 'mic-off'));
+setHTML($('micBtn2'), ic(me.mic ? 'mic' : 'mic-off'));
 
 // ---- Réglages
 for (const input of document.querySelectorAll('#settings [data-k]')) {
