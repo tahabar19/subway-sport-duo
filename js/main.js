@@ -1,9 +1,9 @@
 // Subway Sport Duo : caméra -> pose -> détecteur -> jeu, plus la liaison avec l'autre joueur.
-import { Game } from './game.js?v=14';
-import { loadAssets } from './assets.js?v=14';
-import { MotionDetector, DEFAULTS } from './motion.js?v=14';
-import { Net, newCode, cleanCode } from './net.js?v=14';
-import { Voice, opusSupported } from './voice.js?v=14';
+import { Game } from './game.js?v=15';
+import { loadAssets } from './assets.js?v=15';
+import { MotionDetector, DEFAULTS } from './motion.js?v=15';
+import { Net, newCode, cleanCode } from './net.js?v=15';
+import { Voice, opusSupported } from './voice.js?v=15';
 import { PoseLandmarker, FilesetResolver } from '../vendor/vision_bundle.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -28,7 +28,7 @@ const COUNTDOWN = 3;
 const RUN_TIMEOUT = 1.1; // sans petit saut pendant ce temps, le personnage s'arrête
 const CADENCE_NORMAL = 2.6, PACE_PER_HOP = 0.45, PACE_MIN = 0.5, PACE_MAX = 1.6;
 const SEND_EVERY = 1 / 12; // état envoyé à l'adversaire 12 fois par seconde
-const AVA = (c) => `icones/perso-${c === 'fille' ? 'fille' : 'garcon'}.png?v=14`; // portraits des personnages
+const AVA = (c) => `icones/perso-${c === 'fille' ? 'fille' : 'garcon'}.png?v=15`; // portraits des personnages
 const ic = (n, cls = '') => `<svg class="ic ${cls}"><use href="#i-${n}"/></svg>`;
 // Change le contenu d'un élément seulement s'il a changé (le HUD est mis à jour à chaque image).
 const setText = (el, v) => el.textContent !== String(v) && (el.textContent = v);
@@ -41,7 +41,7 @@ const detector = new MotionDetector({ ...DEFAULTS, ...load('subway-sport-cfg', {
 // Modèles 3D : si le chargement rate (réseau…), le jeu repart avec les anciens personnages en cubes.
 let assets = null;
 try {
-  assets = await loadAssets('?v=14');
+  assets = await loadAssets('?v=15');
 } catch (e) {
   console.warn('Modèles 3D non chargés, retour aux cubes :', e);
 }
@@ -69,6 +69,7 @@ let lastHop = -10, cadence = CADENCE_NORMAL;
 let calLast = { m: null, t: 0 }, calMoving = true;
 let seed = 0;
 let solo = false; // partie lancée sans adversaire
+let soloMode = false; // « Jouer seul » depuis l'accueil : pas de partie à créer, pas de réseau
 let lastSend = 0;
 let resultCounted = false;
 let isCreator = false; // celui qui a créé la partie choisit le nombre de cœurs
@@ -262,6 +263,7 @@ function setPhase(p) {
   $('panel').classList.toggle('hidden', p === 'play' || p === 'watch' || p === 'lobby' || p === 'loading');
   $('livesRow').style.display = p === 'ready' || p === 'waiting' || p === 'over' ? '' : 'none';
   $('watch').classList.toggle('on', p === 'watch');
+  $('micBtn2').style.display = soloMode ? 'none' : ''; // seul : personne à qui parler
   // Les mouvements du corps ne s'affichent que si la caméra est là (ou en train de charger).
   $('moves').style.display = (p === 'ready' || p === 'calib') && (camOk || camLoading) ? '' : 'none';
   $('panel').classList.toggle('decompte', p === 'countdown');
@@ -329,6 +331,16 @@ $('lobbyForm').addEventListener('submit', async (e) => {
   const act = e.submitter?.dataset.act || (linkCode ? 'join' : 'host');
   me.name = cleanName($('name').value);
   if (!me.name) return void ($('lobbyErr').textContent = 'Écris ton prénom');
+  if (act === 'solo') {
+    // Mode solo : on joue tout de suite, sans code ni adversaire (ni micro).
+    $('lobbyErr').textContent = '';
+    audioCtx();
+    soloMode = true;
+    isCreator = true; // les cœurs se règlent librement
+    keepAwake();
+    setPhase('ready');
+    return;
+  }
   const code = linkCode || (act === 'join' ? cleanCode($('code').value) : newCode());
   if (act === 'join' && code.length < 4) return void ($('lobbyErr').textContent = 'Code de partie incomplet');
   $('lobbyErr').textContent = '';
@@ -609,6 +621,7 @@ function updatePanel(dt, t) {
     }
   } else if (phase === 'waiting') {
     bar.style.width = '0%';
+    if (soloMode) return startCountdown((Math.random() * 2 ** 32) >>> 0); // seul : départ tout de suite
     if (!opp || !net.connected)
       msg.textContent = `En attente de ton adversaire…${TOUCH ? '' : '\n(Entrée = jouer seul en attendant)'}`;
     else if (opp.phase === 'play') msg.textContent = `${opp.name} finit sa partie : ${oppScoreNow()}…`;
@@ -837,6 +850,7 @@ function leaveGame() {
   voice?.setMic(false);
   opp = null;
   solo = false;
+  soloMode = false;
   isCreator = false;
   keyboard = false;
   myFinal = 0;

@@ -2,7 +2,7 @@
 // Il ne sait rien de la caméra : on le pilote avec setLane / jump / roll / setRunning.
 import * as THREE from '../vendor/three.module.js';
 import { clone as cloneSkinned } from '../vendor/addons/utils/SkeletonUtils.js';
-import { buildCartoonCity, toon, OUTLINE, addOutline, TOON } from './cartoon.js?v=14';
+import { buildCartoonCity, toon, OUTLINE, addOutline, TOON } from './cartoon.js?v=15';
 
 const LANE_W = 2.4;
 const SPAWN_Z = -120;

@@ -2,7 +2,7 @@
 // Page et code : réseau d'abord (toujours la dernière version), le cache sert hors ligne.
 // Gros fichiers qui ne changent pas (modèle de pose ~6 Mo, moteur wasm ~9 Mo, modèles 3D, Three.js) :
 // cache d'abord, pour que l'appli démarre vite sur le téléphone après la première fois.
-const VERSION = 'subway-duo-14';
+const VERSION = 'subway-duo-15';
 const LOURD = 'subway-duo-lourd-1'; // à changer seulement si un fichier de vendor/ ou assets/ change
 
 self.addEventListener('install', () => self.skipWaiting());

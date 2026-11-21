@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Subway Sport Duo</title>
 <!-- Appli iPhone / Android : « Ajouter à l'écran d'accueil » -->
-<link rel="manifest" href="manifest.webmanifest?v=14">
-<link rel="icon" href="icones/icone-192.png?v=14" type="image/png">
-<link rel="apple-touch-icon" sizes="180x180" href="icones/apple-touch-icon.png?v=14">
+<link rel="manifest" href="manifest.webmanifest?v=15">
+<link rel="icon" href="icones/icone-192.png?v=15" type="image/png">
+<link rel="apple-touch-icon" sizes="180x180" href="icones/apple-touch-icon.png?v=15">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Subway Duo">
@@ -17,12 +17,15 @@
 <link rel="preload" href="fonts/lilita-one-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="fonts/fredoka-latin.woff2" as="font" type="font/woff2" crossorigin>
 <script>
-  // iPhone, appli de l'écran d'accueil : la hauteur donnée par iOS s'arrête au-dessus de la barre d'accueil,
-  // ce qui laissait une bande vide en bas. On prend la hauteur réelle de l'écran.
+  // iPhone, appli de l'écran d'accueil : iOS donne une page plus courte que l'écran (de la hauteur de la barre d'état),
+  // ce qui laissait une bande en bas. On prend la hauteur réelle de l'écran, et le jeu n'est plus « fixed » :
+  // un élément fixed reste coupé à cette page trop courte (classe « appli », voir le CSS).
   (function () {
+    var appli = navigator.standalone || matchMedia('(display-mode: standalone)').matches || /[?&]appli\b/.test(location.search);
+    if (appli) document.documentElement.classList.add('appli');
     var plein = function () {
       var h = innerHeight;
-      if (navigator.standalone || matchMedia('(display-mode: standalone)').matches) {
+      if (appli) {
         var e = innerWidth < innerHeight ? screen.height : screen.width;
         if (e > h) h = e;
       }
@@ -67,6 +70,9 @@
     -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%;
     overscroll-behavior: none; touch-action: none; }
   #game { position: fixed; top: 0; left: 0; width: 100%; height: var(--h, 100%); display: block; touch-action: none; }
+  /* Appli de l'écran d'accueil : tout se place dans la page, qui fait la hauteur réelle de l'écran (jusqu'en bas). */
+  html.appli, html.appli body { position: relative; top: auto; left: auto; }
+  html.appli :is(#game, .overlay, .feuille, .hud, #room, #ghostTag, #toast, #hint, #action, #watch, #tools, #cam) { position: absolute; }
   button, input, select { font: inherit; color: inherit; }
   input, select { user-select: text; -webkit-user-select: text; }
   button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; cursor: pointer; }
@@ -387,14 +393,14 @@
 <canvas id="game"></canvas>
 
 <div id="hud" class="hud">
-  <div class="nom"><img id="meAva" src="icones/perso-garcon.png?v=14" alt=""><span id="meWho">Moi</span></div>
+  <div class="nom"><img id="meAva" src="icones/perso-garcon.png?v=15" alt=""><span id="meWho">Moi</span></div>
   <div class="score cerne" id="score">0</div>
   <div class="puces"><span class="puce" id="speed"></span><span class="puce" id="sub"></span></div>
   <div class="lives" id="lives"></div>
 </div>
 
 <div id="opp" class="hud">
-  <div class="nom"><img id="oppAva" src="icones/perso-fille.png?v=14" alt=""><span id="oppWho">Adversaire</span><svg class="ic" id="oppMic"><use href="#i-mic-off"/></svg></div>
+  <div class="nom"><img id="oppAva" src="icones/perso-fille.png?v=15" alt=""><span id="oppWho">Adversaire</span><svg class="ic" id="oppMic"><use href="#i-mic-off"/></svg></div>
   <div class="score cerne" id="oppScore">0</div>
   <div class="puces"><span class="puce" id="oppState">En attente</span></div>
   <div class="puces"><span class="puce" id="oppGap"></span></div>
@@ -427,8 +433,8 @@
         <div class="field">
           <span class="lab">Ton personnage</span>
           <div class="persos" id="charChoice">
-            <button type="button" class="choice perso" data-char="garcon" aria-pressed="true"><img src="icones/perso-garcon.png?v=14" alt=""><span>Garçon</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
-            <button type="button" class="choice perso" data-char="fille" aria-pressed="false"><img src="icones/perso-fille.png?v=14" alt=""><span>Fille</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
+            <button type="button" class="choice perso" data-char="garcon" aria-pressed="true"><img src="icones/perso-garcon.png?v=15" alt=""><span>Garçon</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
+            <button type="button" class="choice perso" data-char="fille" aria-pressed="false"><img src="icones/perso-fille.png?v=15" alt=""><span>Fille</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
           </div>
         </div>
       </div>
@@ -448,6 +454,7 @@
           </div>
           <div class="actions">
             <button class="btn" type="submit" data-act="host"><svg class="ic plein"><use href="#i-jouer"/></svg>Créer une partie</button>
+            <button class="btn vert" type="submit" data-act="solo" id="soloBtn"><svg class="ic plein"><use href="#i-jouer"/></svg>Jouer seul</button>
             <div class="ou">ou rejoindre avec un code</div>
             <div class="rejoindre">
               <input id="code" class="champ" maxlength="8" placeholder="Code" autocapitalize="characters" enterkeyhint="go">
@@ -546,7 +553,7 @@
 
 <video id="video" playsinline muted autoplay></video>
 
-<script src="vendor/mqtt.min.js?v=14"></script>
-<script type="module" src="js/main.js?v=14"></script>
+<script src="vendor/mqtt.min.js?v=15"></script>
+<script type="module" src="js/main.js?v=15"></script>
 </body>
 </html>
