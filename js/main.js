@@ -1,9 +1,9 @@
 // Subway Sport Duo : caméra -> pose -> détecteur -> jeu, plus la liaison avec l'autre joueur.
-import { Game } from './game.js?v=16';
-import { loadAssets } from './assets.js?v=16';
-import { MotionDetector, DEFAULTS } from './motion.js?v=16';
-import { Net, newCode, cleanCode } from './net.js?v=16';
-import { Voice, opusSupported } from './voice.js?v=16';
+import { Game } from './game.js?v=17';
+import { loadAssets } from './assets.js?v=17';
+import { MotionDetector, DEFAULTS } from './motion.js?v=17';
+import { Net, newCode, cleanCode, MAX_PLAYERS } from './net.js?v=17';
+import { Voice, opusSupported } from './voice.js?v=17';
 import { PoseLandmarker, FilesetResolver } from '../vendor/vision_bundle.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -28,7 +28,7 @@ const COUNTDOWN = 3;
 const RUN_TIMEOUT = 1.1; // sans petit saut pendant ce temps, le personnage s'arrête
 const CADENCE_NORMAL = 2.6, PACE_PER_HOP = 0.45, PACE_MIN = 0.5, PACE_MAX = 1.6;
 const SEND_EVERY = 1 / 12; // état envoyé à l'adversaire 12 fois par seconde
-const AVA = (c) => `icones/perso-${c === 'fille' ? 'fille' : 'garcon'}.png?v=16`; // portraits des personnages
+const AVA = (c) => `icones/perso-${c === 'fille' ? 'fille' : 'garcon'}.png?v=17`; // portraits des personnages
 const ic = (n, cls = '') => `<svg class="ic ${cls}"><use href="#i-${n}"/></svg>`;
 // Change le contenu d'un élément seulement s'il a changé (le HUD est mis à jour à chaque image).
 const setText = (el, v) => el.textContent !== String(v) && (el.textContent = v);
@@ -41,7 +41,7 @@ const detector = new MotionDetector({ ...DEFAULTS, ...load('subway-sport-cfg', {
 // Modèles 3D : si le chargement rate (réseau…), le jeu repart avec les anciens personnages en cubes.
 let assets = null;
 try {
-  assets = await loadAssets('?v=16');
+  assets = await loadAssets('?v=17');
 } catch (e) {
   console.warn('Modèles 3D non chargés, retour aux cubes :', e);
 }
@@ -51,8 +51,12 @@ const net = new Net();
 
 // Moi et l'adversaire
 const me = { name: '', char: 'garcon', mic: true, ...load('subway-duo-me', {}) };
-let opp = null; // { name, char, mic, phase, st, final, alive }
-const wins = { me: 0, opp: 0 };
+// Les autres joueurs de la partie (jusqu'à 5) : id -> { id, name, char, mic, op, phase, st, stAt, final, alive, inRound }
+const opps = new Map();
+const wins = new Map(); // id (ou 'me') -> manches gagnées
+let creatorId = null; // joueur qui a créé la partie (c'est lui qui choisit les cœurs)
+let watchId = null; // joueur qu'on regarde après avoir été éliminé
+let resumeAt = 0, resumeShown = 0; // reprise après une pause (3, 2, 1)
 
 let phase = 'loading'; // loading | lobby | ready | calib | waiting | countdown | play | over
 let landmarker = null;
@@ -116,7 +120,17 @@ function toast(text, secs = 2.6) {
   toastTimer = setTimeout(() => $('toast').classList.remove('on'), secs * 1000);
 }
 
-const oppName = () => opp?.name || 'Ton adversaire';
+const others = () => [...opps.values()];
+const racers = () => others().filter((o) => o.inRound); // ceux qui courent la même manche que moi
+const scoreOf = (o) => o.final ?? o.st?.score ?? 0;
+const isAlive = (o) => o.inRound && o.alive && o.phase === 'play';
+const aliveRacers = () => racers().filter(isAlive);
+const anyAlive = () => aliveRacers().length > 0;
+// « Léa », « Léa et Sam », « Léa, Sam et Noé »
+const names = (list) => {
+  const n = list.map((o) => o.name);
+  return n.length < 2 ? n.join('') : n.slice(0, -1).join(', ') + ' et ' + n.at(-1);
+};
 const cleanName = (s) => String(s || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 14);
 
 // ---- Voix : passe par le même relais que le jeu (voice.js)
@@ -147,88 +161,115 @@ function toggleMic() {
 $('micBtn').addEventListener('click', toggleMic);
 $('micBtn2').addEventListener('click', toggleMic);
 
-// ---- Liaison avec l'adversaire
-net.onStatus = (s, detail) => {
+// ---- Liaison avec les autres joueurs
+function updateRoom() {
   const room = $('room');
   room.classList.add('on');
-  room.classList.toggle('ok', s === 'connecte');
-  if (s === 'connecte') {
-    $('roomText').textContent = net.code;
-    sendHello();
-  } else if (s === 'attente') {
-    $('roomText').textContent = net.code;
-  } else if (s === 'perdu') {
-    $('roomText').textContent = net.code;
-    if (opp) toast(detail === 'quitte' ? `${oppName()} a quitté la partie` : `${oppName()} s'est déconnecté(e)`);
-    opp = null;
-    game.setGhost(null);
-    game.ghostState = null;
-    // Parti pour de bon : celui qui reste tient la salle et choisit les cœurs pour le prochain adversaire.
-    if (detail === 'quitte') isCreator = true;
+  room.classList.toggle('ok', opps.size > 0);
+  room.classList.toggle('plusieurs', opps.size > 1);
+  $('roomText').textContent = (net.code || '') + (opps.size ? ` · ${opps.size + 1} joueurs` : '');
+}
+function syncGhosts() {
+  game.setGhosts(others().map((o) => ({ id: o.id, kind: o.char })));
+}
+net.onStatus = (s, id, detail) => {
+  if (s === 'arrive') sendHello();
+  else if (s === 'parti') {
+    const o = opps.get(id);
+    if (o) toast(detail === 'quitte' ? `${o.name} a quitté la partie` : `${o.name} s'est déconnecté(e)`);
+    opps.delete(id);
+    voice?.forget(id);
+    voice?.setOpus(opusOk && others().every((x) => x.op));
+    syncGhosts();
+    // Le créateur est parti pour de bon : le joueur hôte reprend le choix des cœurs.
+    if (detail === 'quitte' && (id === creatorId || !opps.size)) {
+      creatorId = null;
+      if (net.isHost) isCreator = true;
+    }
     renderLives();
   } else if (s === 'erreur') {
-    $('roomText').textContent = net.code;
-    toast(detail);
-    if (phase === 'lobby') $('lobbyErr').textContent = detail;
+    toast(id);
+    if (phase === 'lobby') $('lobbyErr').textContent = id;
   }
+  updateRoom();
 };
 
 net.onMessage = (m) => {
   if (m.t === 'v') return void voice?.receive(m);
   if (m.t === 'hello') {
-    // Opus si les deux navigateurs savent le faire, sinon son de téléphone.
-    voice?.setOpus(opusOk && m.op === true);
-    const fresh = !opp;
-    opp = { phase: 'ready', st: null, final: null, alive: true, ...opp };
-    opp.name = cleanName(m.name) || 'Adversaire';
-    opp.char = m.char === 'fille' ? 'fille' : 'garcon';
-    opp.mic = !!m.mic;
-    opp.phase = String(m.phase || 'ready');
-    game.setGhost(opp.char);
+    let o = opps.get(m.from);
+    const fresh = !o;
+    if (!o) {
+      const inRound = phase !== 'lobby' && roundIds.includes(m.from); // sa fiche arrive après le départ
+      opps.set(m.from, (o = { id: m.from, phase: 'ready', st: null, final: null, alive: inRound, inRound }));
+    }
+    o.name = cleanName(m.name) || 'Joueur';
+    o.char = m.char === 'fille' ? 'fille' : 'garcon';
+    o.mic = !!m.mic;
+    o.op = m.op === true;
+    o.phase = String(m.phase || 'ready');
+    // Opus si tous les navigateurs savent le faire, sinon son de téléphone.
+    voice?.setOpus(opusOk && others().every((x) => x.op));
+    syncGhosts();
     if (fresh) {
-      toast(`${opp.name} est là !`);
+      toast(`${o.name} est là !`);
       beep(660, 0.12, 'triangle', 0.08);
     }
-    if (m.cr === true && !isCreator) setLives(m.lives, false);
+    if (m.cr === true) {
+      creatorId = m.from;
+      if (!isCreator) setLives(m.lives, false);
+    }
     // On répond si l'autre n'a pas encore notre fiche.
     if (fresh || !m.have) sendHello();
+    updateRoom();
+    renderLives();
     return;
   }
-  if (!opp) return;
+  const o = opps.get(m.from);
+  if (!o) return;
   if (m.t === 'phase') {
-    opp.phase = String(m.phase);
-    if (m.phase === 'waiting' && phase !== 'play') toast(`${oppName()} est prêt(e) !`);
-  } else if (m.t === 'mic') opp.mic = !!m.on;
+    o.phase = String(m.phase);
+    if (m.phase === 'waiting' && phase !== 'play') toast(`${o.name} est prêt(e) !`);
+  } else if (m.t === 'mic') o.mic = !!m.on;
   else if (m.t === 'lives' && !isCreator) setLives(m.n, false);
   else if (m.t === 'st') {
     const n = (v) => (Number.isFinite(v) ? v : 0);
-    opp.st = {
+    o.st = {
       lane: Math.max(-1, Math.min(1, Math.round(n(m.lane)))),
       py: Math.max(0, Math.min(4, n(m.py))),
       roll: !!m.roll, run: Math.max(0, Math.min(2, n(m.run))), speed: n(m.speed),
       dist: n(m.dist), score: Math.max(0, Math.round(n(m.score))), lives: Math.max(0, Math.min(10, n(m.lives))),
       alive: !!m.alive, hurt: !!m.hurt,
     };
-    opp.stAt = now();
+    o.stAt = now();
   } else if (m.t === 'hit') {
-    toast(`${oppName()} ${m.what === 'train' ? "s'est pris un train" : "s'est cogné(e)"} !`);
-    if (phase === 'watch') (game.addTrauma(m.what === 'train' ? 0.7 : 0.45), beep(110, 0.3, 'sawtooth', 0.06));
+    if (!o.inRound) return;
+    toast(`${o.name} ${m.what === 'train' ? "s'est pris un train" : "s'est cogné(e)"} !`);
+    if (phase === 'watch' && m.from === watchId) (game.addTrauma(m.what === 'train' ? 0.7 : 0.45), beep(110, 0.3, 'sawtooth', 0.06));
   } else if (m.t === 'over') {
-    const wasOver = opp.final !== null;
-    opp.final = Math.max(0, Math.round(Number(m.score) || 0));
-    opp.alive = false;
-    if (phase === 'play' && !wasOver) toast(`${oppName()} est éliminé(e) avec ${opp.final} — dépasse ce score !`, 4);
-  } else if (m.t === 'start' && !net.isHost) {
-    // L'hôte donne le départ, avec la graine du parcours commun.
-    if (phase === 'waiting' || phase === 'over' || phase === 'ready') {
-      if (m.lives) setLives(m.lives, false);
-      startCountdown(Number(m.seed) >>> 0);
-    }
+    const wasOver = o.final !== null;
+    o.final = Math.max(0, Math.round(Number(m.score) || 0));
+    o.alive = false;
+    if (phase === 'play' && !wasOver && o.inRound) toast(`${o.name} est éliminé(e) avec ${o.final}`, 3);
+  } else if (m.t === 'go' && net.isHost && phase === 'waiting') startNow();
+  else if (m.t === 'start' && phase === 'waiting' && Array.isArray(m.ids) && m.ids.includes(net.id)) {
+    // L'hôte donne le départ, avec la graine du parcours commun et la liste de ceux qui courent.
+    if (m.lives) setLives(m.lives, false);
+    startCountdown(Number(m.seed) >>> 0, m.ids.map(String));
   }
 };
 
 function sendHello() {
-  net.send({ t: 'hello', name: me.name, char: me.char, mic: me.mic, phase, have: !!opp, op: opusOk, cr: isCreator, lives });
+  const have = [...net.peers.keys()].every((id) => opps.has(id)); // j'ai déjà la fiche de tout le monde
+  net.send({ t: 'hello', name: me.name, char: me.char, mic: me.mic, phase, have, op: opusOk, cr: isCreator, lives });
+}
+
+// L'hôte lance la manche pour tous ceux qui sont prêts.
+function startNow() {
+  const s = (Math.random() * 2 ** 32) >>> 0;
+  const ids = [net.id, ...others().filter((o) => o.phase === 'waiting').map((o) => o.id)];
+  net.send({ t: 'start', seed: s, lives, ids });
+  startCountdown(s, ids);
 }
 
 // Nombre de cœurs : réglé par le créateur de la partie, le même pour les deux.
@@ -244,7 +285,8 @@ function renderLives() {
   $('livesVal').textContent = lives;
   $('livesLobbyVal').textContent = lives;
   $('livesRow').classList.toggle('mine', isCreator);
-  $('livesWho').textContent = isCreator || !opp ? '' : ` (choisi par ${opp.name})`;
+  const cr = opps.get(creatorId);
+  $('livesWho').textContent = isCreator || !cr ? '' : ` (choisi par ${cr.name})`;
 }
 for (const [id, d] of [['livesMinus', -1], ['livesPlus', 1], ['livesLobbyMinus', -1], ['livesLobbyPlus', 1]])
   $(id).addEventListener('click', () => (isCreator || phase === 'lobby') && setLives(lives + d));
@@ -257,6 +299,9 @@ function sendPhase() {
 function setPhase(p) {
   phase = p;
   phaseStart = now();
+  game.paused = false;
+  resumeAt = 0;
+  $('pause').classList.remove('on');
   holdTime = 0;
   $('lobby').classList.toggle('hidden', p !== 'lobby' && p !== 'loading');
   $('tools').classList.toggle('cache', p !== 'play' && p !== 'watch' && p !== 'countdown');
@@ -274,23 +319,32 @@ function setPhase(p) {
     lastActivity = now();
     cadence = CADENCE_NORMAL;
     resultCounted = false;
-    if (opp) {
-      opp.final = null;
-      opp.alive = true;
-      opp.st = null;
+    for (const o of racers()) {
+      o.final = null;
+      o.alive = true;
+      o.st = null;
     }
     game.setCharacter(me.char);
     game.start(seed, lives);
     beep(880, 0.2, 'triangle', 0.08);
   }
-  if (p === 'watch') game.watchStart(seed, opp.char); // on suit l'adversaire sur le même parcours
+  if (p === 'watch') game.watchStart(seed, opps.get(watchId)?.char); // on suit un adversaire sur le même parcours
   renderLives();
   sendPhase();
 }
 
-function startCountdown(s) {
+// ids : joueurs qui courent cette manche (liste donnée par l'hôte, la même chez tout le monde) ;
+// les autres la regardent passer.
+let roundIds = [];
+function startCountdown(s, ids = []) {
   seed = s;
-  solo = !opp || !net.connected;
+  roundIds = ids;
+  for (const o of opps.values()) {
+    o.inRound = ids.includes(o.id);
+    if (o.inRound) Object.assign(o, { final: null, alive: true, st: null });
+  }
+  solo = !racers().length;
+  resultCounted = false;
   setPhase('countdown');
 }
 
@@ -357,7 +411,7 @@ $('lobbyForm').addEventListener('submit', async (e) => {
 // Code de la partie, en gros, et bouton pour l'envoyer (feuille de partage de l'iPhone : Messages, WhatsApp…).
 function renderShare(code, link) {
   const box = $('share');
-  box.innerHTML = `<span class="lab">Code à donner à ton adversaire</span><div class="tuiles">${[...code].map((c) => `<i>${c}</i>`).join('')}</div>`;
+  box.innerHTML = `<span class="lab">Code à donner aux autres joueurs</span><div class="tuiles">${[...code].map((c) => `<i>${c}</i>`).join('')}</div>`;
   const send = document.createElement('button');
   send.type = 'button';
   send.className = 'btn bleu petit';
@@ -387,9 +441,10 @@ async function keepAwake() {
   } catch {}
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') return;
+  if (document.visibilityState !== 'visible') return void syncPause(); // appli cachée : course en pause
   // Retour dans l'appli (iPhone : après la veille ou un changement d'appli) : on relance tout.
   if (phase !== 'lobby' && phase !== 'loading') keepAwake();
+  if (phase === 'play' && game.paused && !sheetOpen()) showPause(true); // retour dans l'appli : la pause attend un toucher
   if (video.srcObject && video.paused) video.play().catch(() => {});
   if (audio && audio.state !== 'running') audio.resume().catch(() => {});
 });
@@ -441,7 +496,7 @@ function trackPose(t) {
   const res = landmarker.detectForVideo(video, performance.now());
   landmarks = res.landmarks?.[0] ?? null;
   measure = detector.measure(landmarks, video.videoWidth / video.videoHeight);
-  if (phase === 'play' && !keyboard) {
+  if (phase === 'play' && !keyboard && !game.paused) {
     for (const e of detector.update(measure, t)) {
       lastActivity = t;
       if (e.type === 'hop') {
@@ -499,33 +554,39 @@ function drawPreview() {
 }
 
 // ---- Écrans
-const oppScoreNow = () => opp?.final ?? opp?.st?.score ?? 0;
-const oppAlive = () => !!opp && opp.alive && opp.phase === 'play';
-
-function resultText() {
-  const a = myFinal, b = oppScoreNow();
-  if (!opp || solo) return `Score ${a} · record ${game.best}`;
-  if (oppAlive()) return `Éliminé(e) avec ${a}.\n${opp.name} court encore : ${b}…`;
-  if (!resultCounted) {
-    resultCounted = true;
-    if (a > b) wins.me++;
-    else if (b > a) wins.opp++;
-    beep(a >= b ? 990 : 330, 0.35, 'triangle', 0.09);
-  }
-  const head = a > b ? `Tu gagnes ${a} à ${b} !` : b > a ? `${opp.name} gagne ${b} à ${a}` : `Égalité ${a} partout !`;
-  return `${head}\nVictoires : toi ${wins.me} – ${wins.opp} ${opp.name}`;
+// Classement de la manche : moi et ceux qui la courent, du meilleur score au moins bon.
+function standings() {
+  const meRow = { id: 'me', name: me.name || 'Moi', char: me.char, score: myFinal, alive: false, me: true };
+  const rows = racers().map((o) => ({ id: o.id, name: o.name, char: o.char, score: scoreOf(o), alive: isAlive(o) }));
+  return [meRow, ...rows].sort((a, b) => b.score - a.score);
 }
+// Une fois tout le monde éliminé : victoire au meilleur score (pas en cas d'égalité), son du résultat.
+function countResult() {
+  if (solo || resultCounted || anyAlive()) return;
+  resultCounted = true;
+  const list = standings();
+  const top = list[0].score;
+  if (list.filter((x) => x.score === top).length === 1) wins.set(list[0].id, (wins.get(list[0].id) || 0) + 1);
+  beep(myFinal >= top ? 990 : 330, 0.35, 'triangle', 0.09);
+}
+const winsLine = () => 'Victoires : ' + standings().map((x) => `${x.me ? 'toi' : x.name} ${wins.get(x.id) || 0}`).join(' · ');
+// Adversaire encore en course le plus avancé (à regarder après mon élimination).
+const leaderAlive = () => aliveRacers().filter((o) => o.st).sort((a, b) => scoreOf(b) - scoreOf(a))[0] || null;
 
 // Boutons sous le message : ce que fait la touche Entrée au clavier, au doigt sur téléphone.
 let actsKey = '';
 function renderActs() {
   const list = [];
-  const canRestart = phase === 'ready' || (phase === 'over' && !oppAlive());
+  const canRestart = phase === 'ready' || (phase === 'over' && !anyAlive());
   const again = phase === 'over' ? 'Rejouer' : 'Jouer';
   if (canRestart && !noCamera) list.push(['cam', ic('camera') + again + ' avec la caméra', '']);
   if (canRestart) list.push(['touch', (TOUCH ? ic('doigt') : ic('jouer', 'plein')) + again + (TOUCH ? ' au doigt' : ' au clavier'), noCamera ? '' : 'bleu']);
   if (phase === 'calib') list.push(['touch', (TOUCH ? ic('doigt') + 'Plutôt au doigt' : ic('jouer', 'plein') + 'Plutôt au clavier'), 'bleu']);
-  if (phase === 'waiting' && (!opp || !net.connected)) list.push(['solo', ic('jouer', 'plein') + 'Jouer seul en attendant', 'bleu']);
+  if (phase === 'waiting' && !opps.size) list.push(['solo', ic('jouer', 'plein') + 'Jouer seul en attendant', 'bleu']);
+  // Quelqu'un tarde : ceux qui sont prêts peuvent partir sans lui.
+  const late = others().filter((o) => o.phase !== 'waiting' && o.phase !== 'play');
+  if (phase === 'waiting' && late.length && others().some((o) => o.phase === 'waiting'))
+    list.push(['go', ic('jouer', 'plein') + 'Partir sans ' + names(late), 'bleu']);
   const key = list.map((a) => a[0] + a[1]).join('|');
   if (key === actsKey) return;
   actsKey = key;
@@ -544,7 +605,7 @@ $('acts').addEventListener('click', (e) => {
   const act = e.target.closest('button')?.dataset.act;
   audioCtx();
   keepAwake();
-  const canRestart = phase === 'ready' || (phase === 'over' && !oppAlive());
+  const canRestart = phase === 'ready' || (phase === 'over' && !anyAlive());
   if (act === 'touch' && (canRestart || phase === 'calib')) {
     keyboard = true;
     ready();
@@ -552,7 +613,8 @@ $('acts').addEventListener('click', (e) => {
     // Avec la caméra : on se place, on ne bouge plus 2 s, et c'est parti.
     wantCamera();
     setPhase('calib');
-  } else if (act === 'solo' && phase === 'waiting' && (!opp || !net.connected)) startCountdown((Math.random() * 2 ** 32) >>> 0);
+  } else if (act === 'solo' && phase === 'waiting' && !opps.size) startCountdown((Math.random() * 2 ** 32) >>> 0);
+  else if (act === 'go' && phase === 'waiting') net.isHost ? startNow() : net.send({ t: 'go' });
 });
 
 const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -561,19 +623,34 @@ function resultHTML() {
     `<div class="res${win ? ' gagne' : ''}">${win ? '<span class="badge">Gagnant</span>' : ''}<img src="${AVA(char)}" alt="">` +
     `<span class="n">${esc(name)}</span><span class="pts cerne">${pts}</span><span class="sous">${sub}</span></div>`;
   const a = myFinal;
-  if (!opp || solo) return card(me.name || 'Moi', me.char, a, a > 0 && a >= game.best ? 'Nouveau record !' : `record ${game.best}`, false);
-  const b = oppScoreNow(), live = oppAlive();
-  return card('Toi', me.char, a, 'éliminé(e)', !live && a > b) + card(opp.name, opp.char, b, live ? 'court encore…' : 'éliminé(e)', !live && b > a);
+  if (solo || !racers().length) return card(me.name || 'Moi', me.char, a, a > 0 && a >= game.best ? 'Nouveau record !' : `record ${game.best}`, false);
+  const list = standings(), done = !anyAlive();
+  const topAlone = done && list[0].score > (list[1]?.score ?? -1);
+  if (list.length === 2) {
+    // À deux : une grande carte chacun.
+    const [o] = racers(), b = scoreOf(o), live = isAlive(o);
+    return card('Toi', me.char, a, 'éliminé(e)', done && a > b) + card(o.name, o.char, b, live ? 'court encore…' : 'éliminé(e)', done && b > a);
+  }
+  return list
+    .map(
+      (x, i) =>
+        `<div class="rang${topAlone && i === 0 ? ' gagne' : ''}${x.me ? ' moi' : ''}"><span class="r">${i + 1}</span><img src="${AVA(x.char)}" alt="">` +
+        `<span class="qui"><span class="n">${esc(x.name)}</span><span class="sous">${x.alive ? 'court encore…' : 'éliminé(e)'}</span></span>` +
+        `<span class="pts cerne">${x.score}</span></div>`,
+    )
+    .join('');
 }
 
 function panelTitle() {
   if (phase === 'calib') return 'Calibrage';
   if (phase === 'waiting') return 'Prêt !';
   if (phase === 'over') {
-    if (!opp || solo) return 'Terminé';
-    if (oppAlive()) return 'Éliminé';
-    const a = myFinal, b = oppScoreNow();
-    return a > b ? 'Gagné !' : b > a ? 'Perdu…' : 'Égalité';
+    if (solo || !racers().length) return 'Terminé';
+    if (anyAlive()) return 'Éliminé';
+    const list = standings();
+    const rank = 1 + list.filter((x) => x.score > myFinal).length;
+    if (rank === 1) return list.filter((x) => x.score === myFinal).length > 1 ? 'Égalité' : 'Gagné !';
+    return list.length === 2 ? 'Perdu…' : `${rank}e place`;
   }
   return 'Prêt ?';
 }
@@ -587,7 +664,7 @@ function updatePanel(dt, t) {
   const msg = $('msg'), bar = $('bar').firstElementChild;
   const handsUp = MotionDetector.handsUp(measure);
   if (phase === 'ready' || phase === 'over') {
-    const canStart = camOk && t - phaseStart > (phase === 'over' ? 2 : 0) && !(phase === 'over' && oppAlive());
+    const canStart = camOk && t - phaseStart > (phase === 'over' ? 2 : 0) && !(phase === 'over' && anyAlive());
     holdTime = canStart && handsUp ? holdTime + dt : 0;
     bar.style.width = Math.min(100, (holdTime / HOLD_TO_START) * 100) + '%';
     const how = !camOk
@@ -602,12 +679,13 @@ function updatePanel(dt, t) {
         ? `Lève les deux bras pour ${phase === 'over' ? 'la revanche' : 'te mettre prêt(e)'} !`
         : 'Avec la caméra, tu cours avec tout ton corps.\nOu joue au doigt sur l’écran.';
     if (phase === 'over') {
-      resultText(); // compte la victoire (une seule fois) et joue le son du résultat
+      countResult(); // compte la victoire (une seule fois) et joue le son du résultat
       setHTML($('resultat'), resultHTML());
-      const duoDone = opp && !solo && !oppAlive();
-      msg.textContent = oppAlive()
-        ? `${opp.name} court encore…`
-        : [duoDone ? `Victoires : toi ${wins.me} – ${wins.opp} ${opp.name}` : '', camOk ? how : ''].filter(Boolean).join('\n');
+      $('resultat').classList.toggle('liste', !solo && racers().length > 1);
+      const alive = aliveRacers();
+      msg.textContent = alive.length
+        ? `${names(alive)} ${alive.length > 1 ? 'courent' : 'court'} encore…`
+        : [!solo && racers().length ? winsLine() : '', camOk ? how : ''].filter(Boolean).join('\n');
     }
     else msg.textContent = how;
     if (holdTime >= HOLD_TO_START) setPhase('calib');
@@ -643,20 +721,22 @@ function updatePanel(dt, t) {
   } else if (phase === 'waiting') {
     bar.style.width = '0%';
     if (soloMode) return startCountdown((Math.random() * 2 ** 32) >>> 0); // seul : départ tout de suite
-    if (!opp || !net.connected)
-      msg.textContent = `En attente de ton adversaire…${TOUCH ? '' : '\n(Entrée = jouer seul en attendant)'}`;
-    else if (opp.phase === 'play') msg.textContent = `${opp.name} finit sa partie : ${oppScoreNow()}…`;
-    else if (opp.phase !== 'waiting') msg.textContent = `En attente de ${opp.name}…`;
+    const list = others();
+    const playing = list.filter((o) => o.phase === 'play'), late = list.filter((o) => o.phase !== 'waiting');
+    if (!list.length) msg.textContent = `En attente d'autres joueurs…${TOUCH ? '' : '\n(Entrée = jouer seul en attendant)'}`;
+    else if (playing.length) msg.textContent = `${names(playing)} ${playing.length > 1 ? 'finissent leur' : 'finit sa'} partie…`;
+    else if (late.length) msg.textContent = `En attente de ${names(late)}…`;
     else msg.textContent = 'Départ…';
-    // L'hôte donne le départ quand les deux sont prêts.
-    if (net.isHost && opp && net.connected && opp.phase === 'waiting') {
-      const s = (Math.random() * 2 ** 32) >>> 0;
-      net.send({ t: 'start', seed: s, lives });
-      startCountdown(s);
-    }
+    // L'hôte donne le départ quand tout le monde est prêt (et qu'on a la fiche de chacun).
+    if (net.isHost && list.length && !late.length && net.peers.size === opps.size) startNow();
   } else if (phase === 'watch') {
     // Spectateur jusqu'à l'élimination de l'adversaire (ou sa déconnexion).
-    if (!oppAlive()) setPhase('over');
+    const w = opps.get(watchId);
+    if (!w || !isAlive(w)) {
+      const next = leaderAlive();
+      if (next) (watchId = next.id), setPhase('watch'); // le suivant encore en course
+      else setPhase('over');
+    }
   } else if (phase === 'countdown') {
     const left = COUNTDOWN - (t - phaseStart);
     const n = Math.ceil(left);
@@ -676,61 +756,110 @@ function updateHud(t) {
   const a = game.run;
   $('speed').style.background = done || a < 0.75 ? '' : a < 0.95 ? '#1fae6b' : a < 1.2 ? '#f08c00' : '#e8392b';
   setHTML($('lives'), done ? '' : hearts(game.lives));
-  if (phase === 'watch' && opp) setText($('watchText'), `Tu regardes ${opp.name} : ${oppScoreNow()} — toi : ${myFinal}`);
-  const stopped = phase === 'play' && !keyboard && t - lastActivity > RUN_TIMEOUT;
+  const w = phase === 'watch' && opps.get(watchId);
+  if (w) setText($('watchText'), `Tu regardes ${w.name} : ${scoreOf(w)} — toi : ${myFinal}`);
+  const stopped = phase === 'play' && !keyboard && !game.paused && t - lastActivity > RUN_TIMEOUT;
   setText($('hint'), measure ? 'Sautille pour avancer !' : 'Reviens dans le cadre !');
   $('hint').classList.toggle('on', stopped);
 
-  $('share').classList.toggle('on', (phase === 'ready' || phase === 'waiting') && !opp && !!net.code);
+  // Le code reste affiché tant qu'il reste de la place : d'autres peuvent encore venir.
+  $('share').classList.toggle('on', (phase === 'ready' || phase === 'waiting') && !!net.code && opps.size < MAX_PLAYERS - 1);
+  $('micBtn').classList.toggle('talk', !!voice?.talking);
+  renderOpps();
+}
 
-  // Adversaire, à droite
+// Adversaires, à droite : un bloc chacun (une ligne compacte à partir de 3 joueurs).
+const STATES = { ready: 'Se prépare', calib: 'Calibrage…', waiting: 'Prêt(e)', countdown: 'Départ…', play: 'En course', over: 'Éliminé(e)', watch: 'Éliminé(e)', lobby: 'Accueil' };
+const advEls = new Map();
+const tagEls = new Map();
+function advBlock(id) {
+  let b = advEls.get(id);
+  if (b) return b;
+  const el = document.createElement('div');
+  el.className = 'adv';
+  el.innerHTML =
+    `<div class="nom"><img alt=""><span></span><svg class="ic"><use href="#i-mic-off"/></svg></div><div class="score cerne"></div>` +
+    `<div class="puces"><span class="puce etat"></span></div><div class="puces ecart"><span class="puce"></span></div><div class="lives"></div>`;
+  b = { el, ava: el.querySelector('img'), who: el.querySelector('.nom span'), mic: el.querySelector('.nom svg'),
+    score: el.querySelector('.score'), etat: el.querySelector('.etat'), ecart: el.querySelector('.ecart .puce'), lives: el.querySelector('.lives') };
+  advEls.set(id, b);
+  return b;
+}
+function renderOpps() {
   const box = $('opp');
-  if (!opp) {
-    setText($('oppWho'), 'Adversaire');
-    $('oppAva').style.display = 'none';
-    setText($('oppScore'), '—');
-    setHTML($('oppLives'), '');
-    setText($('oppState'), net.connected ? 'Connexion…' : 'Pas encore là');
-    setText($('oppGap'), '');
-    $('oppMic').style.display = 'none';
-    box.classList.remove('out');
-  } else {
-    setText($('oppWho'), opp.name);
-    $('oppAva').style.display = '';
-    const ava = AVA(opp.char);
-    if (!$('oppAva').src.endsWith(ava)) $('oppAva').src = ava;
-    $('oppMic').style.display = '';
-    const micIcon = '#i-' + (opp.mic ? 'mic' : 'mic-off');
-    const use = $('oppMic').firstElementChild;
+  const list = others();
+  const many = list.length > 1;
+  box.classList.toggle('plusieurs', many);
+  if (phase === 'play' || phase === 'watch') list.sort((a, b) => scoreOf(b) - scoreOf(a)); // le premier en haut
+  const ids = list.length ? list.map((o) => o.id) : ['_'];
+  for (const [id, b] of advEls) if (!ids.includes(id)) (b.el.remove(), advEls.delete(id));
+  ids.forEach((id, i) => {
+    const b = advBlock(id);
+    if (box.children[i] !== b.el) box.insertBefore(b.el, box.children[i] || null);
+  });
+  if (!list.length) {
+    // Personne encore : une place vide.
+    const b = advBlock('_');
+    setText(b.who, 'Adversaire');
+    b.ava.style.display = 'none';
+    b.mic.style.display = 'none';
+    setText(b.score, '—');
+    setHTML(b.lives, '');
+    setText(b.etat, net.connected ? 'Connexion…' : 'Pas encore là');
+    setText(b.ecart, '');
+    b.el.classList.remove('out');
+  }
+  for (const o of list) {
+    const b = advBlock(o.id);
+    setText(b.who, o.name);
+    b.ava.style.display = '';
+    const ava = AVA(o.char);
+    if (!b.ava.src.endsWith(ava)) b.ava.src = ava;
+    b.mic.style.display = '';
+    const micIcon = '#i-' + (o.mic ? 'mic' : 'mic-off');
+    const use = b.mic.firstElementChild;
     if (use.getAttribute('href') !== micIcon) use.setAttribute('href', micIcon);
-    $('oppMic').classList.toggle('parle', !!voice?.remoteTalking);
-    $('micBtn').classList.toggle('talk', !!voice?.talking);
-    setText($('oppScore'), oppScoreNow());
-    setHTML($('oppLives'), hearts(opp.final !== null ? 0 : (opp.st?.lives ?? lives)));
-    setText($('oppState'),
-      { ready: 'Se prépare', calib: 'Calibrage…', waiting: 'Prêt(e)', countdown: 'Départ…', play: 'En course', over: 'Éliminé(e)', lobby: 'Accueil' }[opp.phase] || '');
-    box.classList.toggle('out', opp.final !== null && phase === 'play');
+    b.mic.classList.toggle('parle', !!voice?.talkingFrom(o.id));
+    setText(b.score, scoreOf(o));
+    setHTML(b.lives, hearts(o.final !== null ? 0 : (o.st?.lives ?? lives)));
+    const racing = phase === 'play' && !solo && o.inRound;
+    b.el.classList.toggle('out', racing && o.final !== null);
     let gap = '';
-    if (phase === 'play' && opp.phase === 'play' && opp.st && !solo) {
-      const d = Math.round(opp.st.dist - game.distance);
+    if (racing && o.phase === 'play' && o.st && o.final === null) {
+      const d = Math.round(o.st.dist - game.distance);
       gap = d > 2 ? `devant de ${d} m` : d < -2 ? `derrière de ${-d} m` : 'côte à côte';
-    } else if (phase === 'play' && opp.final !== null && !solo) {
-      const d = opp.final - game.score;
-      gap = d > 0 ? `encore ${d} pts pour gagner` : 'tu mènes !';
+    } else if (racing && o.final !== null) {
+      const d = o.final - game.score;
+      gap = d > 0 ? `encore ${d} pts` : 'tu le dépasses !';
     }
-    setText($('oppGap'), gap);
+    const state = o.inRound || phase !== 'play' ? STATES[o.phase] || '' : 'Attend la suite';
+    // À plusieurs, une seule puce : l'écart pendant la course, sinon où il en est.
+    setText(b.etat, many ? gap || state : state);
+    setText(b.ecart, many ? '' : gap);
   }
 
-  // Fantôme : visible pendant la course, à sa voie, avec son prénom au-dessus.
-  const showGhost = phase === 'play' && !solo && opp?.st && opp.phase === 'play';
-  game.ghostState = showGhost ? { ...opp.st, gap: opp.st.dist - game.distance } : null;
-  const tag = $('ghostTag'), pos = showGhost ? game.ghostLabelPos() : null;
-  tag.style.display = pos ? 'block' : 'none';
-  if (pos) {
-    setText(tag, opp.name);
+  // Fantômes : visibles pendant la course, à leur voie, avec leur prénom au-dessus.
+  for (const o of list) {
+    const show = phase === 'play' && !solo && o.inRound && o.st && o.phase === 'play' && o.final === null;
+    game.setGhostState(o.id, show ? { ...o.st, gap: o.st.dist - game.distance } : null);
+    let tag = tagEls.get(o.id);
+    const pos = show ? game.ghostLabelPos(o.id) : null;
+    if (!pos) {
+      if (tag) tag.style.display = 'none';
+      continue;
+    }
+    if (!tag) {
+      tag = document.createElement('div');
+      tag.className = 'ghostTag';
+      $('ghostTags').append(tag);
+      tagEls.set(o.id, tag);
+    }
+    tag.style.display = 'block';
+    setText(tag, o.name);
     tag.style.left = pos.x + 'px';
     tag.style.top = pos.y + 'px';
   }
+  for (const [id, tag] of tagEls) if (!opps.has(id)) (tag.remove(), tagEls.delete(id));
 }
 
 // État envoyé à l'adversaire
@@ -740,10 +869,10 @@ function sendState(t) {
   // Une fois par seconde, on répète ce qu'un message perdu ne doit pas bloquer.
   if (t - lastSlow > 1) {
     lastSlow = t;
-    if (!opp) sendHello();
+    if ([...net.peers.keys()].some((id) => !opps.has(id))) sendHello(); // quelqu'un n'a pas encore ma fiche
     sendPhase();
     if (phase === 'over' || phase === 'watch') net.send({ t: 'over', score: myFinal });
-    if (phase === 'countdown' && net.isHost && t - phaseStart < 1.2) net.send({ t: 'start', seed, lives });
+    if (phase === 'countdown' && net.isHost && t - phaseStart < 1.2 && roundIds.length) net.send({ t: 'start', seed, lives, ids: roundIds });
     if (isCreator && (phase === 'ready' || phase === 'waiting' || phase === 'over')) net.send({ t: 'lives', n: lives });
   }
   if (t - lastSend < SEND_EVERY) return;
@@ -771,17 +900,16 @@ game.onEvent = (e, info) => {
   }
   else if (e === 'jump') beep(520, 0.12, 'sine', 0.08);
   else if (e === 'roll') beep(260, 0.12, 'sine', 0.08);
-  else if (e === 'daytime') {
-    toast({ 'après-midi': "L'après-midi", 'coucher de soleil': 'Le soleil se couche', nuit: 'La nuit tombe' }[info] || info);
-  } else if (e === 'quality') {
-    const names = ['très basse', 'basse', 'moyenne', 'haute'];
-    toast(`Graphismes réglés sur « ${names[info]} » pour rester fluide`);
+  // Moment de la journée et graphismes : ça change sans message (pas de fenêtre qui gêne la course).
+  else if (e === 'daytime' || e === 'quality') {
   } else if (e === 'hit') (beep(110, 0.3, 'sawtooth', 0.1), net.send({ t: 'hit', what: info }));
   else if (e === 'over') {
     myFinal = game.score;
     net.send({ t: 'over', score: myFinal });
-    // L'adversaire court encore : on le regarde jouer. Sinon, résultat.
-    setPhase(!solo && oppAlive() && opp.st ? 'watch' : 'over');
+    // D'autres courent encore : on regarde celui qui mène. Sinon, résultat.
+    const next = solo ? null : leaderAlive();
+    if (next) (watchId = next.id), setPhase('watch');
+    else setPhase('over');
   }
 };
 
@@ -789,17 +917,19 @@ game.onEvent = (e, info) => {
 addEventListener('keydown', (e) => {
   if (e.target instanceof HTMLInputElement) return;
   const k = e.key;
-  if (k === 'Enter' && (phase === 'ready' || (phase === 'over' && !oppAlive()))) {
+  if (k === 'Enter' && (phase === 'ready' || (phase === 'over' && !anyAlive()))) {
     // Corps visible : on calibre comme avec les bras levés ; sinon, partie au clavier.
     if (camOk && measure) return setPhase('calib');
     keyboard = true;
     return ready();
   }
-  if (k === 'Enter' && phase === 'waiting' && (!opp || !net.connected)) return startCountdown((Math.random() * 2 ** 32) >>> 0);
+  if (k === 'Enter' && phase === 'waiting' && !opps.size) return startCountdown((Math.random() * 2 ** 32) >>> 0);
   if ((k === 'm' || k === 'M') && phase !== 'lobby') return toggleMic();
   if (k === 'r' || k === 'R') return toggleSettings();
   if (k === 'v' || k === 'V') return toggleCam();
+  if ((k === 'p' || k === 'P') && phase === 'play') return showPause(!$('pause').classList.contains('on'));
   if (k === 'Escape') {
+    if ($('pause').classList.contains('on')) return showPause(false);
     if ($('settings').classList.contains('on')) return toggleSettings(false);
     if ($('confirm').classList.contains('on')) return askQuit(false);
     if (phase !== 'lobby' && phase !== 'loading') return askQuit(true);
@@ -854,7 +984,56 @@ for (const ev of ['gesturestart', 'gesturechange', 'dblclick']) document.addEven
 // ---- Boutons micro, caméra, réglages
 function toggleSettings(on = !$('settings').classList.contains('on')) {
   $('settings').classList.toggle('on', on);
+  syncPause();
 }
+
+// ---- Pause : la course s'arrête pendant qu'une feuille est ouverte ou que l'appli est cachée,
+// puis repart après 3, 2, 1. À plusieurs, seule MA course s'arrête (chacun court son parcours).
+const sheetOpen = () => ['pause', 'settings', 'confirm'].some((id) => $(id).classList.contains('on'));
+function showPause(on) {
+  if (on && phase !== 'play') return;
+  if (on)
+    $('pauseText').textContent = aliveRacers().length ? 'Ta course est en pause.\nLes autres continuent de courir.' : 'La course t’attend.';
+  $('pause').classList.toggle('on', on);
+  syncPause();
+}
+function syncPause() {
+  if (phase !== 'play') return;
+  if (sheetOpen() || document.visibilityState !== 'visible') {
+    game.paused = true;
+    resumeAt = 0;
+  } else if (game.paused && !resumeAt) {
+    resumeAt = now() + 3;
+    resumeShown = 0;
+  }
+}
+function tickResume(t) {
+  if (!resumeAt) return;
+  const left = Math.ceil(resumeAt - t);
+  if (left > 0 && left !== resumeShown) {
+    resumeShown = left;
+    flash(String(left));
+    beep(440, 0.12, 'triangle', 0.08);
+  }
+  if (t >= resumeAt) {
+    resumeAt = 0;
+    game.paused = false;
+    lastActivity = t; // pas de « Reviens dans le cadre » à la reprise
+    flash('GO !');
+    beep(660, 0.12, 'triangle', 0.08);
+  }
+}
+$('pauseBtn').addEventListener('click', () => showPause(true));
+$('pauseGo').addEventListener('click', () => showPause(false));
+$('pauseSet').addEventListener('click', () => {
+  $('pause').classList.remove('on');
+  toggleSettings(true);
+});
+$('pauseQuit').addEventListener('click', () => {
+  $('pause').classList.remove('on');
+  askQuit(true);
+});
+$('pause').addEventListener('click', (e) => e.target === $('pause') && showPause(false));
 function toggleCam() {
   $('cam').style.display = $('cam').style.display ? '' : 'none';
 }
@@ -872,6 +1051,7 @@ function askQuit(on = true) {
       phase === 'play' ? 'Ta course s’arrête et tu reviens à l’accueil.' : 'Tu reviens à l’accueil pour créer ou rejoindre une autre partie.';
   }
   $('confirm').classList.toggle('on', on);
+  syncPause();
 }
 function leaveGame() {
   askQuit(false);
@@ -879,20 +1059,22 @@ function leaveGame() {
   net.send({ t: 'bye' });
   net.stop();
   voice?.setMic(false);
-  opp = null;
+  opps.clear();
+  creatorId = watchId = null;
   solo = false;
   soloMode = false;
   isCreator = false;
   keyboard = false;
   myFinal = 0;
-  wins.me = wins.opp = 0;
-  game.setGhost(null);
-  game.ghostState = null;
+  wins.clear();
+  syncGhosts();
+  for (const tag of tagEls.values()) tag.remove();
+  tagEls.clear();
   game.state = 'idle';
   game.resetRun();
   game.setCharacter(me.char);
-  $('opp').classList.remove('on', 'out');
-  $('room').classList.remove('on', 'ok');
+  $('opp').classList.remove('on', 'plusieurs');
+  $('room').classList.remove('on', 'ok', 'plusieurs');
   $('micBtn').classList.remove('on');
   $('share').innerHTML = '';
   // Retour à l'accueil normal (même si on était arrivé par un lien de partie).
@@ -956,12 +1138,14 @@ function frame() {
   last = t;
   if (trackPose(t)) drawPreview();
   if (phase !== 'play') updatePanel(dt, t);
+  else tickResume(t);
   game.setRunning(phase === 'play' && (keyboard || t - lastActivity < RUN_TIMEOUT));
   game.setPace(keyboard ? 1 : Math.min(PACE_MAX, Math.max(PACE_MIN, 1 + PACE_PER_HOP * (cadence - CADENCE_NORMAL))));
-  if (phase === 'watch' && opp?.st) {
+  const w = phase === 'watch' && opps.get(watchId);
+  if (w?.st) {
     // L'état arrive 12×/s : on prévoit la distance entre deux messages.
-    const ahead = Math.min(0.3, t - (opp.stAt || t)) * opp.st.speed;
-    game.watchTo({ ...opp.st, dist: opp.st.dist + ahead }, dt);
+    const ahead = Math.min(0.3, t - (w.stAt || t)) * w.st.speed;
+    game.watchTo({ ...w.st, dist: w.st.dist + ahead }, dt);
   }
   game.update(dt);
   updateHud(t);
@@ -984,7 +1168,7 @@ addEventListener('resize', () => requestAnimationFrame(ajusterAccueil));
 document.fonts?.ready.then(ajusterAccueil);
 for (const img of document.querySelectorAll('#lobby img')) img.addEventListener('load', ajusterAccueil);
 
-window.duo = { game, net, get phase() { return phase; }, get voice() { return voice; } }; // pour le débogage dans la console
+window.duo = { game, net, opps, get phase() { return phase; }, get voice() { return voice; } }; // pour le débogage dans la console
 setPhase('lobby');
 ajusterAccueil();
 // ?sanscamera : pour tester à deux sur un même PC, au clavier.

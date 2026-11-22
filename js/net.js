@@ -1,4 +1,4 @@
-// Liaison entre les deux joueurs.
+// Liaison entre les joueurs d'une même partie (jusqu'à MAX_PLAYERS).
 //
 // Données du jeu : par deux serveurs MQTT publics à la fois (WebSocket sécurisé, comme un
 // site web : ça passe sur tous les réseaux). Chaque message part sur les deux, on garde le
@@ -9,10 +9,11 @@
 // réseaux différents, rien ne passait.
 
 const BROKERS = ['wss://broker.hivemq.com:8884/mqtt', 'wss://broker.emqx.io:8084/mqtt'];
-const TOPIC = 'subwayduo/v1/';
+const TOPIC = 'subwayduo/v2/'; // v2 : plusieurs joueurs par salle (les anciennes versions restent entre elles)
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const PING_EVERY = 1000; // ms
-const PARTNER_TIMEOUT = 6000; // ms sans nouvelles = adversaire parti
+const PARTNER_TIMEOUT = 6000; // ms sans nouvelles = joueur parti
+export const MAX_PLAYERS = 6;
 
 export const newCode = () => Array.from({ length: 5 }, () => ALPHABET[(Math.random() * ALPHABET.length) | 0]).join('');
 export const cleanCode = (c) => (c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
@@ -23,23 +24,24 @@ export class Net {
     this.id = randomId();
     this.code = null;
     this.clients = [];
-    this.partner = null; // identifiant de l'autre joueur
-    this.partnerSeen = 0;
+    this.peers = new Map(); // identifiant d'un autre joueur -> dernière nouvelle (ms)
     this.seq = 0;
     this.seen = new Set(); // messages déjà reçus (ils arrivent en double, un par serveur)
-    this.lastSeq = {}; // dernier n° reçu par type de flux continu (état, voix)
+    this.lastSeq = {}; // dernier n° reçu par joueur et type de flux continu (état, voix)
+    this.gone = new Set(); // joueurs partis : leurs derniers messages en route ne les font pas revenir
     this.onMessage = () => {};
-    this.onStatus = () => {}; // 'attente' | 'connecte' | 'perdu' | 'erreur'
+    this.onStatus = () => {}; // 'attente' | 'arrive' (id) | 'parti' (id, 'quitte'?) | 'erreur'
     this.timer = null;
   }
 
-  // L'hôte (celui qui donne le départ) est choisi pareil des deux côtés : le plus petit identifiant.
+  // L'hôte (celui qui donne le départ) est choisi pareil chez tout le monde : le plus petit identifiant.
   get isHost() {
-    return !!this.partner && this.id < this.partner;
+    for (const id of this.peers.keys()) if (id < this.id) return false;
+    return true;
   }
 
   get connected() {
-    return !!this.partner && Date.now() - this.partnerSeen < PARTNER_TIMEOUT;
+    return this.peers.size > 0;
   }
 
   host(code) {
@@ -66,7 +68,7 @@ export class Net {
         c.subscribe(topic, { qos: 0 });
         if (!anyUp) {
           anyUp = true;
-          if (!this.partner) this.onStatus('attente');
+          if (!this.peers.size) this.onStatus('attente');
         }
         this.ping();
       });
@@ -94,12 +96,12 @@ export class Net {
       }
     }, 1000);
     this.clients = [];
-    this.partner = null;
+    this.peers = new Map();
     this.topic = null;
     this.code = null;
     this.seen = new Set();
     this.lastSeq = {};
-    this.gone = null;
+    this.gone = new Set();
     this.id = randomId(); // nouvel identifiant pour la prochaine partie
   }
 
@@ -109,15 +111,17 @@ export class Net {
 
   tick() {
     this.ping();
-    if (this.partner && !this.connected) {
-      this.partner = null;
-      this.onStatus('perdu');
-    }
+    const t = Date.now();
+    for (const [id, seen] of this.peers)
+      if (t - seen > PARTNER_TIMEOUT) {
+        this.peers.delete(id);
+        this.onStatus('parti', id);
+      }
   }
 
   send(msg) {
     if (!this.topic) return;
-    const data = JSON.stringify({ ...msg, from: this.id, seq: ++this.seq, to: this.partner });
+    const data = JSON.stringify({ ...msg, from: this.id, seq: ++this.seq });
     // L'état continu (15×/s) en QoS 0 ; les événements en QoS 1 pour ne pas les perdre.
     const qos = msg.t === 'st' || msg.t === 'ping' || msg.t === 'v' ? 0 : 1;
     for (const c of this.clients) if (c.connected) c.publish(this.topic, data, { qos });
@@ -130,34 +134,31 @@ export class Net {
     } catch {
       return;
     }
-    if (!m || typeof m !== 'object' || typeof m.from !== 'string' || m.from === this.id || m.from === this.gone) return;
+    if (!m || typeof m !== 'object' || typeof m.from !== 'string' || m.from === this.id || this.gone.has(m.from)) return;
     const key = m.from + ':' + m.seq;
     if (this.seen.has(key)) return;
     this.seen.add(key);
     if (this.seen.size > 600) this.seen = new Set([...this.seen].slice(-300));
 
-    // Une seule personne en face : la première qui se présente.
-    if (!this.partner || !this.connected) {
-      if (m.to && m.to !== this.id) return; // elle joue déjà avec quelqu'un d'autre
-      const fresh = this.partner !== m.from;
-      this.partner = m.from;
-      this.partnerSeen = Date.now();
-      this.lastSeq = {};
-      if (fresh) this.onStatus('connecte');
+    if (!this.peers.has(m.from)) {
+      if (m.t === 'bye') return;
+      if (this.peers.size >= MAX_PLAYERS - 1) return; // salle pleine
+      this.peers.set(m.from, Date.now());
+      this.onStatus('arrive', m.from);
     }
-    if (m.from !== this.partner) return;
-    this.partnerSeen = Date.now();
+    this.peers.set(m.from, Date.now());
     if (m.t === 'ping') return;
     if (m.t === 'bye') {
-      // L'autre a quitté la partie : on le sait tout de suite, sans attendre 6 s de silence.
-      this.gone = m.from; // ses derniers messages encore en route ne le font pas revenir
-      this.partner = null;
-      this.onStatus('perdu', 'quitte');
+      // Parti de la partie : on le sait tout de suite, sans attendre 6 s de silence.
+      this.gone.add(m.from);
+      this.peers.delete(m.from);
+      this.onStatus('parti', m.from, 'quitte');
       return;
     }
     if (m.t === 'st' || m.t === 'v') {
-      if (m.seq < (this.lastSeq[m.t] || 0)) return; // arrivé en retard par l'autre serveur
-      this.lastSeq[m.t] = m.seq;
+      const k = m.from + m.t;
+      if (m.seq < (this.lastSeq[k] || 0)) return; // arrivé en retard par l'autre serveur
+      this.lastSeq[k] = m.seq;
     }
     this.onMessage(m);
   }

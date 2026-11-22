@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Subway Sport Duo</title>
 <!-- Appli iPhone / Android : « Ajouter à l'écran d'accueil » -->
-<link rel="manifest" href="manifest.webmanifest?v=16">
-<link rel="icon" href="icones/icone-192.png?v=16" type="image/png">
-<link rel="apple-touch-icon" sizes="180x180" href="icones/apple-touch-icon.png?v=16">
+<link rel="manifest" href="manifest.webmanifest?v=17">
+<link rel="icon" href="icones/icone-192.png?v=17" type="image/png">
+<link rel="apple-touch-icon" sizes="180x180" href="icones/apple-touch-icon.png?v=17">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Subway Duo">
@@ -73,6 +73,7 @@
   /* Appli de l'écran d'accueil : tout se place dans la page, qui fait la hauteur réelle de l'écran (jusqu'en bas). */
   html.appli, html.appli body { position: relative; top: auto; left: auto; }
   html.appli :is(#game, .overlay, .feuille, .hud, #room, #ghostTag, #toast, #hint, #action, #watch, #tools, #cam) { position: absolute; }
+  html.appli .ghostTag { position: absolute; }
   button, input, select { font: inherit; color: inherit; }
   input, select { user-select: text; -webkit-user-select: text; }
   button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; cursor: pointer; }
@@ -176,7 +177,7 @@
   .entete .boutons { display: flex; gap: 8px; }
   #micBtn2.live { background: linear-gradient(var(--vert-haut), var(--vert-bas)); color: #fff; }
   /* Derrière les menus, pas de score ni de salle : seulement le décor */
-  body:is([data-phase="lobby"], [data-phase="loading"], [data-phase="ready"], [data-phase="calib"], [data-phase="waiting"], [data-phase="over"]) :is(.hud, #room, #ghostTag) { display: none !important; }
+  body:is([data-phase="lobby"], [data-phase="loading"], [data-phase="ready"], [data-phase="calib"], [data-phase="waiting"], [data-phase="over"]) :is(.hud, #room, .ghostTag) { display: none !important; }
   .entete h2 { margin: 0; font-family: var(--titre); font-weight: 400; font-size: 28px; letter-spacing: .01em; text-align: left; }
   #share { display: none; margin: 0 0 16px; padding: 14px; border-radius: 20px; background: var(--papier-2); }
   #share.on { display: block; }
@@ -201,6 +202,16 @@
   .res.gagne { background: linear-gradient(#ffe36b, #fff3bf); box-shadow: inset 0 0 0 3px var(--encre); }
   .res .badge { position: absolute; top: -12px; left: 50%; transform: translateX(-50%) rotate(-3deg); padding: 3px 12px; border-radius: 99px;
     background: var(--vert-bas); color: #fff; border: 3px solid var(--encre); font-family: var(--titre); font-size: 15px; white-space: nowrap; }
+  #resultat.liste { flex-direction: column; gap: 6px; }
+  .rang { display: flex; align-items: center; gap: 10px; padding: 6px 14px 6px 8px; border-radius: 16px; background: var(--papier-2); text-align: left; }
+  .rang .r { font-family: var(--titre); font-size: 22px; width: 24px; text-align: center; flex: none; }
+  .rang img { width: 40px; height: 40px; border-radius: 50%; background: #bfe5ff; object-fit: cover; object-position: 50% 6%; border: 2px solid var(--encre); flex: none; }
+  .rang .qui { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .rang .n { font-weight: 700; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rang .sous { font-size: 12px; font-weight: 600; color: var(--discret); }
+  .rang .pts { font-size: 30px; line-height: 1; }
+  .rang.gagne { background: linear-gradient(#ffe36b, #fff3bf); box-shadow: inset 0 0 0 3px var(--encre); }
+  .rang.moi .n::after { content: " (toi)"; color: var(--discret); font-weight: 600; }
   #livesRow { display: flex; align-items: center; justify-content: space-between; min-height: 60px; padding: 6px 6px 6px 14px;
     border-radius: 18px; background: var(--papier-2); margin-bottom: 14px; }
   #livesRow .rond { display: none; }
@@ -240,14 +251,24 @@
   .nom { display: inline-flex; align-items: center; gap: 6px; max-width: 44vw; height: 36px; padding: 0 12px 0 3px;
     background: rgba(255,255,255,.94); border: 3px solid var(--encre); border-radius: 99px; font-weight: 700; font-size: 15px;
     box-shadow: 0 3px 0 var(--encre); }
-  #opp .nom { flex-direction: row-reverse; padding: 0 3px 0 12px; }
+  #opp { gap: 10px; }
+  .adv { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .adv .nom { flex-direction: row-reverse; padding: 0 3px 0 12px; }
+  /* 3 joueurs ou plus : une ligne compacte par adversaire (prénom, score, écart) */
+  #opp.plusieurs { gap: 6px; }
+  #opp.plusieurs .adv { flex-direction: row-reverse; align-items: center; gap: 6px; }
+  #opp.plusieurs .nom { height: 30px; font-size: 13px; max-width: 30vw; }
+  #opp.plusieurs .nom img { width: 22px; height: 22px; }
+  #opp.plusieurs .score { font-size: 24px; margin: 0; }
+  #opp.plusieurs .puce { height: 24px; font-size: 12px; padding: 0 8px; }
+  #opp.plusieurs .lives, #opp.plusieurs .ecart { display: none; }
   .nom img { width: 28px; height: 28px; border-radius: 50%; background: #bfe5ff; object-fit: cover; object-position: 50% 8%; flex: none; }
   .nom span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .nom .ic { font-size: 16px; flex: none; color: var(--discret); }
   .nom .ic.parle { color: var(--vert-bas); }
   .score { font-size: 46px; line-height: 1; font-variant-numeric: tabular-nums; margin: 2px 2px 0; }
   .puces { display: flex; gap: 6px; flex-wrap: wrap; }
-  #opp .puces { justify-content: flex-end; }
+  .adv .puces { justify-content: flex-end; }
   .puce { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border-radius: 99px;
     background: rgba(27,35,64,.72); color: #fff; font-weight: 600; font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .puce:empty { display: none; }
@@ -255,17 +276,18 @@
   .piece { width: 15px; height: 15px; border-radius: 50%; background: var(--jaune); border: 2.5px solid #c98a00; flex: none; }
   .lives { display: flex; gap: 2px; font-size: 22px; min-height: 1px; }
   .lives .ic { stroke: var(--encre); stroke-width: 2.2; fill: #ff4d5e; }
-  #opp.out .score { opacity: .55; text-decoration: line-through; text-decoration-thickness: 4px; }
+  .adv.out .score { opacity: .55; text-decoration: line-through; text-decoration-thickness: 4px; }
 
   #room { position: fixed; top: calc(var(--st) + 14px); left: 50%; transform: translateX(-50%); z-index: 3; display: none; pointer-events: none;
     align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 99px; background: rgba(255,255,255,.94);
     border: 3px solid var(--encre); font-weight: 700; font-size: 14px; white-space: nowrap; max-width: 40vw; overflow: hidden; }
   #room.on { display: flex; }
+  #room.on.plusieurs { display: none; } /* 3 joueurs et plus : la liste à droite suffit */
   #room i { width: 10px; height: 10px; border-radius: 50%; background: #ff9f1a; flex: none; box-shadow: 0 0 0 2px var(--encre); }
   #room.ok i { background: var(--vert-bas); }
   #roomText { overflow: hidden; text-overflow: ellipsis; }
 
-  #ghostTag { position: fixed; transform: translate(-50%, -100%); pointer-events: none; display: none; z-index: 2; white-space: nowrap;
+  .ghostTag { position: fixed; transform: translate(-50%, -100%); pointer-events: none; display: none; z-index: 2; white-space: nowrap;
     padding: 3px 10px; border-radius: 99px; background: rgba(255,255,255,.85); border: 2px solid var(--encre); font-weight: 700; font-size: 14px; }
 
   #toast { position: fixed; top: calc(var(--st) + 120px); left: 50%; transform: translate(-50%, -8px); z-index: 7; pointer-events: none;
@@ -312,12 +334,14 @@
     border-bottom: 0; box-shadow: 0 -6px 30px rgba(0,0,0,.3); padding: 20px calc(var(--sr) + 20px) calc(var(--sb) + 22px) calc(var(--sl) + 20px);
     animation: monte .28s cubic-bezier(.2,1.2,.5,1); }
   @keyframes monte { from { transform: translateY(40%); opacity: .4; } }
-  #confirm { align-items: center; padding: 20px; }
-  #confirm .panneau { border-radius: 30px; border-bottom: 4px solid var(--encre); box-shadow: 0 8px 0 var(--encre), 0 24px 50px rgba(0,0,0,.3);
+  :is(#confirm, #pause) { align-items: center; padding: 20px; }
+  :is(#confirm, #pause) .panneau { border-radius: 30px; border-bottom: 4px solid var(--encre); box-shadow: 0 8px 0 var(--encre), 0 24px 50px rgba(0,0,0,.3);
     max-width: 380px; text-align: center; padding: 24px 20px; }
-  #confirm h2 { margin: 0 0 8px; font-family: var(--titre); font-weight: 400; font-size: 30px; }
-  #confirm p { margin: 0 0 20px; font-size: 17px; color: var(--discret); }
-  #confirm .actions { margin-top: 0; }
+  :is(#confirm, #pause) h2 { margin: 0 0 8px; font-family: var(--titre); font-weight: 400; font-size: 30px; }
+  :is(#confirm, #pause) p { margin: 0 0 20px; font-size: 17px; color: var(--discret); }
+  :is(#confirm, #pause) .actions { margin-top: 0; }
+  #pauseBtn { display: none; }
+  body[data-phase="play"] #pauseBtn { display: inline-flex; }
   #settings h3 { margin: 18px 0 4px; font-family: var(--titre); font-weight: 400; font-size: 17px; color: var(--discret); letter-spacing: .02em; }
   #settings label { display: grid; grid-template-columns: 1fr minmax(120px, 48%) 48px; gap: 12px; align-items: center;
     min-height: 54px; font-weight: 600; font-size: 16px; border-bottom: 2px solid var(--papier-2); }
@@ -389,32 +413,28 @@
   <symbol id="i-avancer" viewBox="0 0 24 24"><path d="m17 11-5-5-5 5"/><path d="m17 18-5-5-5 5"/></symbol>
   <symbol id="i-eclair" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></symbol>
   <symbol id="i-coeur" viewBox="0 0 24 24"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4.5" width="4" height="15" rx="1.2"/><rect x="14" y="4.5" width="4" height="15" rx="1.2"/></symbol>
   <symbol id="i-oeil" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
 </svg>
 
 <canvas id="game"></canvas>
 
 <div id="hud" class="hud">
-  <div class="nom"><img id="meAva" src="icones/perso-garcon.png?v=16" alt=""><span id="meWho">Moi</span></div>
+  <div class="nom"><img id="meAva" src="icones/perso-garcon.png?v=17" alt=""><span id="meWho">Moi</span></div>
   <div class="score cerne" id="score">0</div>
   <div class="puces"><span class="puce" id="speed"></span><span class="puce" id="sub"></span></div>
   <div class="lives" id="lives"></div>
 </div>
 
-<div id="opp" class="hud">
-  <div class="nom"><img id="oppAva" src="icones/perso-fille.png?v=16" alt=""><span id="oppWho">Adversaire</span><svg class="ic" id="oppMic"><use href="#i-mic-off"/></svg></div>
-  <div class="score cerne" id="oppScore">0</div>
-  <div class="puces"><span class="puce" id="oppState">En attente</span></div>
-  <div class="puces"><span class="puce" id="oppGap"></span></div>
-  <div class="lives" id="oppLives"></div>
-</div>
+<div id="opp" class="hud"></div>
 
 <div id="room"><i></i><span id="roomText"></span></div>
-<div id="ghostTag"></div>
+<div id="ghostTags"></div>
 <div id="toast" role="status" aria-live="polite"></div>
 <div id="action" class="cerne"></div>
 <div id="hint" class="cerne">Sautille pour avancer !</div>
 <div id="tools" class="cache">
+  <button id="pauseBtn" class="rond" type="button" aria-label="Pause"><svg class="ic plein"><use href="#i-pause"/></svg></button>
   <button id="micBtn" class="rond" type="button" aria-label="Micro"><svg class="ic"><use href="#i-mic-off"/></svg></button>
   <button id="camBtn" class="rond" type="button" aria-label="Montrer ou cacher la caméra"><svg class="ic"><use href="#i-camera"/></svg></button>
   <button id="setBtn" class="rond" type="button" aria-label="Réglages"><svg class="ic"><use href="#i-reglages"/></svg></button>
@@ -435,8 +455,8 @@
         <div class="field">
           <span class="lab">Ton personnage</span>
           <div class="persos" id="charChoice">
-            <button type="button" class="choice perso" data-char="garcon" aria-pressed="true"><img src="icones/perso-garcon.png?v=16" alt=""><span>Garçon</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
-            <button type="button" class="choice perso" data-char="fille" aria-pressed="false"><img src="icones/perso-fille.png?v=16" alt=""><span>Fille</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
+            <button type="button" class="choice perso" data-char="garcon" aria-pressed="true"><img src="icones/perso-garcon.png?v=17" alt=""><span>Garçon</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
+            <button type="button" class="choice perso" data-char="fille" aria-pressed="false"><img src="icones/perso-fille.png?v=17" alt=""><span>Fille</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
           </div>
         </div>
       </div>
@@ -538,6 +558,18 @@
   </div>
 </div>
 
+<div id="pause" class="feuille">
+  <div class="panneau" role="dialog" aria-labelledby="pauseTitle">
+    <h2 id="pauseTitle">Pause</h2>
+    <p id="pauseText">La course t'attend.</p>
+    <div class="actions">
+      <button type="button" class="btn vert" id="pauseGo"><svg class="ic plein"><use href="#i-jouer"/></svg>Reprendre</button>
+      <button type="button" class="btn blanc" id="pauseSet"><svg class="ic"><use href="#i-reglages"/></svg>Réglages</button>
+      <button type="button" class="btn rouge" id="pauseQuit"><svg class="ic"><use href="#i-sortir"/></svg>Quitter</button>
+    </div>
+  </div>
+</div>
+
 <div id="confirm" class="feuille">
   <div class="panneau" role="alertdialog" aria-labelledby="confirmTitle">
     <h2 id="confirmTitle">Quitter la partie ?</h2>
@@ -551,7 +583,7 @@
 
 <video id="video" playsinline muted autoplay></video>
 
-<script src="vendor/mqtt.min.js?v=16"></script>
-<script type="module" src="js/main.js?v=16"></script>
+<script src="vendor/mqtt.min.js?v=17"></script>
+<script type="module" src="js/main.js?v=17"></script>
 </body>
 </html>

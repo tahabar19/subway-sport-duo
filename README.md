@@ -1,14 +1,17 @@
 # Subway Sport Duo
 
-Version à deux joueurs de Subway Sport (`~/Bureau/subway-sport`), en ligne sur GitHub Pages.
+Version multijoueur (seul, ou de 2 à 6 joueurs) de Subway Sport (`~/Bureau/subway-sport`), en ligne sur GitHub Pages.
 
-- Les deux joueurs courent sur **le même parcours** (même graine aléatoire, rangées au mètre près quelle que soit la fluidité), le meilleur score gagne.
+- Tous les joueurs courent sur **le même parcours** (même graine aléatoire, rangées au mètre près quelle que soit la fluidité), le meilleur score gagne.
 - Accueil : prénom, personnage fille / garçon, micro activé ou coupé (modifiable en jeu : bouton ou touche M).
-- Nombre de cœurs (1 à 10) choisi par celui qui crée la partie, le même pour les deux.
-- Quand tu perds, tu regardes la course de l'adversaire (mode spectateur, `game.watchStart` / `watchTo`) jusqu'à la fin.
-- Ton score à gauche, celui de l'adversaire à droite ; son personnage en gris un peu devant toi, qui recule ou avance selon l'écart.
+- Nombre de cœurs (1 à 10) choisi par celui qui crée la partie, le même pour tous.
+- Quand tu perds, tu regardes la course de celui qui mène encore (mode spectateur, `game.watchStart` / `watchTo`) jusqu'à la fin,
+  puis classement de la manche (l'hôte envoie avec le départ la liste de ceux qui courent : même classement chez tous).
+- Ton score à gauche, les adversaires à droite (une ligne compacte chacun à partir de 3 joueurs) ; leurs personnages en gris
+  un peu devant toi, qui reculent ou avancent selon l'écart.
 - Liaison : les données du jeu passent par deux serveurs MQTT publics à la fois (`vendor/mqtt.min.js`,
-  WebSocket sécurisé : marche sur tous les réseaux). Une salle = un code, 2 joueurs maximum.
+  WebSocket sécurisé : marche sur tous les réseaux). Une salle = un code, 6 joueurs maximum
+  (sujet `subwayduo/v2/` : les versions à 2 joueurs restent entre elles).
 - Voix : par le même relais (`js/voice.js`) : Opus via WebCodecs (~20 kbit/s), ou son de téléphone
   (8 kHz, loi µ) si un des navigateurs ne sait pas faire d'Opus. Envoyée seulement quand on parle.
   (Plus de WebRTC : les relais gratuits de PeerJS ne répondent plus, la voix ne passait pas entre deux réseaux.)
@@ -52,3 +55,9 @@ Tester en taille iPhone : Chrome → outils de développement → mode appareil 
 ## Modèles 3D
 
 Ville cartoon générée en code (matin → après-midi → nuit) ; personnages, trains et barrières : modèles CC0 de Quaternius et Kenney (voir `assets/CREDITS.md`). Si leur chargement échoue, le jeu revient aux personnages en cubes.
+
+- **Pause** pendant la course (bouton ⏸, touche P, ou automatiquement quand l'appli passe en arrière-plan) ; reprise après 3, 2, 1.
+  À plusieurs, seule ta course s'arrête.
+- **Trains qui foncent** vers le joueur (à partir de ~100 m) : leur voie reste libre devant eux, klaxon, phares et faisceau jaune.
+- Graphismes « auto » : baissent d'un cran si le téléphone peine (< 40 images/s pendant 6 s), remontent quand c'est de nouveau
+  fluide, jamais en dessous de « basse » tout seuls. Pas de message à l'écran (ni pour le moment de la journée).

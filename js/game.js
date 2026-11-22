@@ -2,7 +2,7 @@
 // Il ne sait rien de la caméra : on le pilote avec setLane / jump / roll / setRunning.
 import * as THREE from '../vendor/three.module.js';
 import { clone as cloneSkinned } from '../vendor/addons/utils/SkeletonUtils.js';
-import { buildCartoonCity, toon, OUTLINE, addOutline, TOON } from './cartoon.js?v=16';
+import { buildCartoonCity, toon, OUTLINE, addOutline, TOON } from './cartoon.js?v=17';
 
 const LANE_W = 2.4;
 const SPAWN_Z = -120;
@@ -208,19 +208,27 @@ export class Game {
   }
 
   // Mesure la fluidité par tranches de 2 s, seulement en course (le chargement et l'accueil
-  // faussent la mesure) ; deux tranches d'affilée sous ~48 images/s → on descend d'un cran.
+  // faussent la mesure). Lent pendant 3 tranches d'affilée (< 40 images/s) → un cran en moins ;
+  // de nouveau fluide pendant 15 s (> 55 images/s) → un cran en plus. Un cran qui a déjà été
+  // trop lourd n'est plus retenté. Jamais en dessous de 1 tout seul (le 0 rend l'image floue).
   autoQuality(realDt) {
-    if (!this.autoQ || this.quality <= 0 || (this.state !== 'play' && this.state !== 'watch')) return;
+    if (!this.autoQ || this.paused || (this.state !== 'play' && this.state !== 'watch')) return;
     this.qT += realDt;
     this.qN++;
     if (this.qT < 2) return;
     const avg = this.qT / this.qN;
     this.qT = this.qN = 0;
     if (this.qSkip > 0) return void this.qSkip--;
-    this.qSlow = avg > 1 / 48 ? (this.qSlow || 0) + 1 : 0;
-    if (this.qSlow >= 2) {
-      this.qSlow = 0;
+    this.qSlow = avg > 1 / 40 ? (this.qSlow || 0) + 1 : 0;
+    this.qFast = avg < 1 / 55 ? (this.qFast || 0) + 1 : 0;
+    if (this.qSlow >= 3 && this.quality > 1) {
+      this.qSlow = this.qFast = 0;
+      this.qCeil = this.quality - 1; // ce cran-là était trop lourd pour ce téléphone
       this.setQuality(this.quality - 1, true);
+      this.onEvent('quality', this.quality);
+    } else if (this.qFast >= 8 && this.quality < Math.min(3, this.qCeil ?? 3)) {
+      this.qSlow = this.qFast = 0;
+      this.setQuality(this.quality + 1, true);
       this.onEvent('quality', this.quality);
     }
   }
@@ -251,24 +259,35 @@ export class Game {
     this.player = this.me.group;
   }
 
-  // Fantôme de l'adversaire : son personnage en gris transparent, un peu devant.
-  // null = pas d'adversaire. Mettre à jour son état avec ghostState.
-  setGhost(kind) {
-    if (this.ghost) this.scene.remove(this.ghost.group);
-    this.ghost = kind ? makeCharacter(kind, true) : null;
-    if (this.ghost) {
-      this.ghost.px = 0;
-      this.ghost.phase = 0;
-      this.ghost.fade = 1;
-      this.ghost.z = -5;
-      this.scene.add(this.ghost.group);
-    }
+  // Fantômes des adversaires : leur personnage en gris transparent, un peu devant.
+  // list = [{ id, kind }] ; leur état se donne à chaque image avec setGhostState(id, état | null).
+  setGhosts(list) {
+    this.ghosts ??= new Map();
+    const want = new Map(list.map((g) => [g.id, g.kind]));
+    for (const [id, gh] of this.ghosts)
+      if (want.get(id) !== gh.kind) {
+        this.scene.remove(gh.group);
+        this.ghosts.delete(id);
+      }
+    for (const [id, kind] of want)
+      if (!this.ghosts.has(id)) {
+        const gh = makeCharacter(kind, true);
+        Object.assign(gh, { px: 0, phase: 0, fade: 1, z: -5, state: null });
+        gh.group.visible = false;
+        this.scene.add(gh.group);
+        this.ghosts.set(id, gh);
+      }
+  }
+  setGhostState(id, st) {
+    const gh = this.ghosts?.get(id);
+    if (gh) gh.state = st;
   }
 
-  // Position à l'écran (px) de la tête du fantôme, pour placer son prénom au-dessus.
-  ghostLabelPos() {
-    if (!this.ghost || !this.ghost.group.visible) return null;
-    const v = new THREE.Vector3(this.ghost.px, 2.7 + (this.ghostState?.py || 0), this.ghost.z).project(this.camera);
+  // Position à l'écran (px) de la tête d'un fantôme, pour placer son prénom au-dessus.
+  ghostLabelPos(id) {
+    const gh = this.ghosts?.get(id);
+    if (!gh || !gh.group.visible) return null;
+    const v = new THREE.Vector3(gh.px, 2.7 + (gh.state?.py || 0), gh.z).project(this.camera);
     if (v.z > 1) return null;
     return { x: ((v.x + 1) / 2) * this.renderer.domElement.clientWidth, y: ((1 - v.y) / 2) * this.renderer.domElement.clientHeight };
   }
@@ -329,13 +348,13 @@ export class Game {
     this.pace = p;
   }
   setLane(l) {
-    if (this.state === 'play') this.lane = Math.max(-1, Math.min(1, l));
+    if (this.state === 'play' && !this.paused) this.lane = Math.max(-1, Math.min(1, l));
   }
   moveLane(d) {
     this.setLane(this.lane + d);
   }
   jump() {
-    if (this.state !== 'play') return;
+    if (this.state !== 'play' || this.paused) return;
     if (this.py > 0.05) {
       // Déjà en l'air : on retient la demande, le saut repartira à l'atterrissage.
       this.jumpWanted = this.clock + 0.3;
@@ -355,7 +374,7 @@ export class Game {
     this.squashV = 0;
   }
   roll() {
-    if (this.state !== 'play') return;
+    if (this.state !== 'play' || this.paused) return;
     this.rollLeft = ROLL_TIME;
     if (this.py > 0) this.vy = Math.min(this.vy, -12); // en l'air : on redescend vite
     this.onEvent('roll');
@@ -549,6 +568,7 @@ export class Game {
       this.hitStop = Math.max(0, this.hitStop - dt);
       simDt = dt * 0.05;
     }
+    if (this.paused) simDt = dt = 0; // pause : l'image reste figée, rien n'avance
     if (this.state === 'play') this.step(simDt);
     this.animate(simDt, dt);
     this.renderer.render(this.scene, this.camera);
@@ -744,10 +764,14 @@ export class Game {
     this.shadow.position.set(this.px, 0.01, 0);
     this.shadow.scale.setScalar(1 / (1 + this.py * 0.5));
 
-    // Fantôme de l'adversaire. Sa distance suit l'écart de score, mais reste
-    // toujours visible : à égalité il est un peu devant, s'il mène il s'éloigne.
-    const gs = this.ghostState, gh = this.ghost;
-    if (gh && gs) {
+    // Fantômes des adversaires. Leur distance suit l'écart de score, mais ils restent
+    // toujours visibles : à égalité un peu devant, celui qui mène s'éloigne.
+    for (const gh of this.ghosts?.values() || []) {
+      const gs = gh.state;
+      if (!gs) {
+        gh.group.visible = false;
+        continue;
+      }
       gh.px += ((gs.lane ?? 0) * LANE_W - gh.px) * (1 - Math.exp(-dt / 0.08));
       const gap = Math.max(-4, Math.min(14, gs.gap || 0));
       gh.z += (-3.6 - gap * 0.5 - gh.z) * (1 - Math.exp(-dt / 0.3));
@@ -763,7 +787,7 @@ export class Game {
       const blink = gs.hurt && Math.floor(this.time * 12) % 2 === 0;
       for (const m of gh.mats) m.opacity = (blink ? 0.2 : 0.62) * gh.fade;
       gh.group.visible = true;
-    } else if (gh) gh.group.visible = false;
+    }
 
     // Pièces ramassées : elles suivent le joueur, grossissent puis rétrécissent à zéro.
     let n = 0;

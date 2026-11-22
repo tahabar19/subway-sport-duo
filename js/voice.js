@@ -1,9 +1,10 @@
-// Voix entre les deux joueurs, par le même relais que le jeu (pas de connexion directe).
+// Voix entre les joueurs, par le même relais que le jeu (pas de connexion directe).
 //
 // Envoi : micro -> paquets de ~60 ms -> Opus (WebCodecs, ~20 kbit/s) ou, si l'un des deux
 // navigateurs ne sait pas faire d'Opus, son de téléphone (8 kHz, loi µ, 64 kbit/s).
 // Rien n'est envoyé quand personne ne parle.
-// Réception : décodage, puis lecture avec un petit tampon (~150 ms) contre les à-coups.
+// Réception : décodage, puis lecture avec un petit tampon (~150 ms) contre les à-coups,
+// une file par joueur (plusieurs peuvent parler en même temps).
 
 const OPUS = { codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate: 20000 };
 const GATE = 0.006; // volume (RMS) à partir duquel on considère qu'on parle
@@ -55,12 +56,11 @@ export class Voice {
     this.on = false;
     this.level = 0; // volume du micro (0..1), pour l'affichage
     this.speakingUntil = 0;
-    this.remoteUntil = 0; // l'autre parle jusqu'à…
-    this.playAt = 0;
+    this.remoteUntil = 0; // quelqu'un parle jusqu'à…
+    this.remotes = new Map(); // joueur -> { decoder, playAt, until, n }
     this.out = ctx.createGain();
     this.out.gain.value = 1.4;
     this.out.connect(ctx.destination);
-    this.decoder = null;
     this.encoder = null;
     this.pending = [];
     this.ts = 0;
@@ -149,54 +149,66 @@ export class Voice {
     this.send({ t: 'v', c: 'u', d: b64(out) });
   }
 
-  // Paquet reçu du partenaire
+  // Paquet reçu d'un autre joueur
   receive(m) {
+    let r = this.remotes.get(m.from);
+    if (!r) this.remotes.set(m.from, (r = { decoder: null, playAt: 0, until: 0, n: 0 }));
     try {
       if (m.c === 'u' && typeof m.d === 'string') {
         const u = unb64(m.d);
         const f = new Float32Array(u.length);
         for (let i = 0; i < u.length; i++) f[i] = muDecode(u[i]);
-        this.play(f, 8000);
+        this.play(r, f, 8000);
       } else if (m.c === 'o' && Array.isArray(m.f)) {
-        if (!this.decoder) {
-          this.decoder = new AudioDecoder({
+        if (!r.decoder) {
+          r.decoder = new AudioDecoder({
             output: (ad) => {
               const f = new Float32Array(ad.numberOfFrames);
               ad.copyTo(f, { planeIndex: 0, format: 'f32-planar' });
-              this.play(f, ad.sampleRate);
+              this.play(r, f, ad.sampleRate);
               ad.close();
             },
-            error: () => (this.decoder = null),
+            error: () => (r.decoder = null),
           });
-          this.decoder.configure({ ...OPUS, sampleRate: Number(m.r) || 48000 });
+          r.decoder.configure({ ...OPUS, sampleRate: Number(m.r) || 48000 });
         }
         for (const s of m.f.slice(0, 10)) {
           if (typeof s !== 'string') continue;
           const data = unb64(s);
-          this.decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: (this.n++) * 20000, data }));
+          r.decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: (r.n++) * 20000, data }));
         }
       }
     } catch {}
   }
 
-  play(f, rate) {
+  play(r, f, rate) {
     if (!f.length) return;
     const ctx = this.ctx, now = ctx.currentTime;
-    if (this.playAt < now || this.playAt > now + MAX_LAG) this.playAt = now + BUFFER;
+    if (r.playAt < now || r.playAt > now + MAX_LAG) r.playAt = now + BUFFER;
     const buf = ctx.createBuffer(1, f.length, rate);
     buf.copyToChannel(f, 0);
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(this.out);
-    src.start(this.playAt);
-    this.playAt += buf.duration;
+    src.start(r.playAt);
+    r.playAt += buf.duration;
     this.played = (this.played || 0) + buf.duration; // secondes de voix reçues (pour les tests)
-    this.remoteUntil = this.playAt + 0.25;
+    r.until = r.playAt + 0.25;
+    this.remoteUntil = Math.max(this.remoteUntil, r.until);
   }
 
-  // L'autre est-il en train de parler ?
+  // Quelqu'un d'autre parle-t-il ? (id : ce joueur-là)
   get remoteTalking() {
     return this.ctx.currentTime < this.remoteUntil;
+  }
+  talkingFrom(id) {
+    return this.ctx.currentTime < (this.remotes.get(id)?.until || 0);
+  }
+  forget(id) {
+    try {
+      this.remotes.get(id)?.decoder?.close();
+    } catch {}
+    this.remotes.delete(id);
   }
   get talking() {
     return this.on && this.ctx.currentTime < this.speakingUntil;
