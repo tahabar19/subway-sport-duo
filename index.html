@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Subway Sport Duo</title>
 <!-- Appli iPhone / Android : « Ajouter à l'écran d'accueil » -->
-<link rel="manifest" href="manifest.webmanifest?v=15">
-<link rel="icon" href="icones/icone-192.png?v=15" type="image/png">
-<link rel="apple-touch-icon" sizes="180x180" href="icones/apple-touch-icon.png?v=15">
+<link rel="manifest" href="manifest.webmanifest?v=16">
+<link rel="icon" href="icones/icone-192.png?v=16" type="image/png">
+<link rel="apple-touch-icon" sizes="180x180" href="icones/apple-touch-icon.png?v=16">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Subway Duo">
@@ -113,6 +113,8 @@
     z-index: 4; padding: calc(var(--st) + 16px) calc(var(--sr) + 16px) calc(var(--sb) + 20px) calc(var(--sl) + 16px);
     overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; overscroll-behavior: contain; }
   .overlay.hidden { display: none; }
+  /* Accueil : rapetissé juste ce qu'il faut pour tenir sans défiler (voir ajusterAccueil dans main.js) */
+  #lobby > * { zoom: var(--zoom, 1); flex: none; }
   .panneau { position: relative; width: 100%; max-width: 460px; background: var(--papier); border: 4px solid var(--encre);
     border-radius: 30px; padding: 22px 20px 22px; box-shadow: 0 8px 0 var(--encre), 0 24px 50px rgba(0,0,0,.28); }
   .logo { margin: 4px 0 18px; text-align: center; transform: rotate(-4deg); line-height: .86; flex: none; }
@@ -344,7 +346,7 @@
     .overlay { padding-top: calc(var(--st) + 8px); }
     .logo { margin: 0 0 10px; } .logo b { font-size: 40px; } .logo b + b { font-size: 60px; }
     .panneau { padding-top: 18px; padding-bottom: 18px; } .field + .field { margin-top: 12px; }
-    .perso img { max-width: 108px; } .ligne { min-height: 54px; margin-top: 10px; } .actions { margin-top: 14px; gap: 12px; }
+    .perso img { max-width: min(108px, 12.5vh); } .ligne { min-height: 54px; margin-top: 10px; } .actions { margin-top: 14px; gap: 12px; }
     .champ { height: 52px; } .btn { min-height: 54px; }
   }
   /* Téléphone couché : peu de hauteur */
@@ -393,14 +395,14 @@
 <canvas id="game"></canvas>
 
 <div id="hud" class="hud">
-  <div class="nom"><img id="meAva" src="icones/perso-garcon.png?v=15" alt=""><span id="meWho">Moi</span></div>
+  <div class="nom"><img id="meAva" src="icones/perso-garcon.png?v=16" alt=""><span id="meWho">Moi</span></div>
   <div class="score cerne" id="score">0</div>
   <div class="puces"><span class="puce" id="speed"></span><span class="puce" id="sub"></span></div>
   <div class="lives" id="lives"></div>
 </div>
 
 <div id="opp" class="hud">
-  <div class="nom"><img id="oppAva" src="icones/perso-fille.png?v=15" alt=""><span id="oppWho">Adversaire</span><svg class="ic" id="oppMic"><use href="#i-mic-off"/></svg></div>
+  <div class="nom"><img id="oppAva" src="icones/perso-fille.png?v=16" alt=""><span id="oppWho">Adversaire</span><svg class="ic" id="oppMic"><use href="#i-mic-off"/></svg></div>
   <div class="score cerne" id="oppScore">0</div>
   <div class="puces"><span class="puce" id="oppState">En attente</span></div>
   <div class="puces"><span class="puce" id="oppGap"></span></div>
@@ -433,16 +435,12 @@
         <div class="field">
           <span class="lab">Ton personnage</span>
           <div class="persos" id="charChoice">
-            <button type="button" class="choice perso" data-char="garcon" aria-pressed="true"><img src="icones/perso-garcon.png?v=15" alt=""><span>Garçon</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
-            <button type="button" class="choice perso" data-char="fille" aria-pressed="false"><img src="icones/perso-fille.png?v=15" alt=""><span>Fille</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
+            <button type="button" class="choice perso" data-char="garcon" aria-pressed="true"><img src="icones/perso-garcon.png?v=16" alt=""><span>Garçon</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
+            <button type="button" class="choice perso" data-char="fille" aria-pressed="false"><img src="icones/perso-fille.png?v=16" alt=""><span>Fille</span><i class="coche"><svg class="ic"><use href="#i-check"/></svg></i></button>
           </div>
         </div>
       </div>
       <div>
-        <div class="ligne">
-          <span class="quoi"><svg class="ic"><use href="#i-mic"/></svg>Micro pour vous parler</span>
-          <button type="button" class="interrupteur" id="micSwitch" aria-pressed="true" aria-label="Micro"></button>
-        </div>
         <div id="hostOrJoin">
           <div class="ligne">
             <span class="quoi"><svg class="ic coeur plein"><use href="#i-coeur"/></svg>Cœurs</span>
@@ -553,7 +551,7 @@
 
 <video id="video" playsinline muted autoplay></video>
 
-<script src="vendor/mqtt.min.js?v=15"></script>
-<script type="module" src="js/main.js?v=15"></script>
+<script src="vendor/mqtt.min.js?v=16"></script>
+<script type="module" src="js/main.js?v=16"></script>
 </body>
 </html>

@@ -2,7 +2,7 @@
 // Il ne sait rien de la caméra : on le pilote avec setLane / jump / roll / setRunning.
 import * as THREE from '../vendor/three.module.js';
 import { clone as cloneSkinned } from '../vendor/addons/utils/SkeletonUtils.js';
-import { buildCartoonCity, toon, OUTLINE, addOutline, TOON } from './cartoon.js?v=15';
+import { buildCartoonCity, toon, OUTLINE, addOutline, TOON } from './cartoon.js?v=16';
 
 const LANE_W = 2.4;
 const SPAWN_Z = -120;
@@ -16,6 +16,10 @@ const ROLL_TIME = 0.75;
 const LOW_H = 0.8; // barrière basse : à sauter
 const HIGH_Y = 1.25; // dessous de la barrière haute : passer en roulade
 const TRAIN_LEN = 14;
+// Trains qui foncent vers le joueur : leur voie reste libre devant eux sur RESERVE mètres
+// (ils ne traversent jamais une barrière), et le klaxon sonne quand ils arrivent.
+const RESERVE = 130;
+const HORN_Z = -75;
 const SLEEPER_GAP = 2;
 const N_SLEEPERS = 70;
 const BASE_FOV = 54;
@@ -78,6 +82,8 @@ const GEO = {
   trainStripe: box(2.04, 0.35, TRAIN_LEN + 0.02),
   coin: new THREE.CylinderGeometry(0.32, 0.32, 0.08, 16),
   headlight: new THREE.CircleGeometry(0.2, 16),
+  glow: new THREE.CircleGeometry(0.55, 20),
+  beam: new THREE.PlaneGeometry(1.9, 16),
 };
 const MAT = {
   red: mat(0xe5392f),
@@ -88,8 +94,27 @@ const MAT = {
   coin: toon(0xffd21f, { emissive: 0x7a4a00, emissiveIntensity: 0.6 }),
   stripes: toon(0xffffff, { map: STRIPES }),
   headlight: new THREE.MeshBasicMaterial({ color: 0xfff6c8 }),
+  glow: new THREE.MeshBasicMaterial({ color: 0xfff3a0, transparent: true, opacity: 0.75, depthWrite: false, blending: THREE.AdditiveBlending }),
+  beam: new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.22, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }),
   trains: [mat(0x2f7de1), mat(0x1fae6b), mat(0xd9552b), mat(0x8a4fd3)],
 };
+
+// Train en marche : gros halos clignotants sur les phares et faisceau jaune sur les rails devant lui.
+function trainLights(g) {
+  const l = new THREE.Group();
+  for (const x of [-0.6, 0.6]) {
+    const h = new THREE.Mesh(GEO.glow, MAT.glow);
+    h.position.set(x, 0.8, TRAIN_LEN / 2 + 0.06);
+    l.add(h);
+  }
+  const beam = new THREE.Mesh(GEO.beam, MAT.beam);
+  beam.rotation.x = -Math.PI / 2;
+  beam.position.set(0, 0.06, TRAIN_LEN / 2 + 8);
+  l.add(beam);
+  l.visible = false;
+  g.add(l);
+  return l;
+}
 
 export class Game {
   constructor(canvas, assets = null) {
@@ -277,6 +302,7 @@ export class Game {
     this.pace = 1; // allure demandée par le joueur (1 = normale), voir setPace
     this.speed = 0;
     this.nextRow = 40;
+    this.reserve = null; // { lane, until } : voie gardée libre pour un train qui va foncer
     this.clock = 0; // temps de jeu écoulé
     this.jumpWanted = -1;
     this.runPhase = 0;
@@ -375,7 +401,8 @@ export class Game {
       }
       // Phares (enfants ajoutés après les 3 modèles).
       for (const x of [-0.6, 0.6]) add(GEO.headlight, MAT.headlight, x, 0.8, TRAIN_LEN / 2 + 0.03);
-    } else if (type === 'low') {
+    }
+    if (type === 'train') g.userData.lights = trainLights(g); else if (type === 'low') {
       add(GEO.lowBar, MAT.red, 0, LOW_H - 0.11);
       add(GEO.lowBar, MAT.white, 0, LOW_H - 0.45);
       add(GEO.lowLeg, MAT.dark, -0.9, LOW_H / 2);
@@ -397,7 +424,7 @@ export class Game {
   }
 
   // ---- Génération des obstacles
-  addObstacle(type, lane, z) {
+  addObstacle(type, lane, z, v = 0) {
     const o = this.pool[type].pop() || this.buildObstacle(type);
     // Toujours un tirage pour la couleur du train (même ordre qu'avant) : parcours identique
     // chez les deux joueurs.
@@ -406,6 +433,9 @@ export class Game {
       if (ASSETS) o.mesh.children.forEach((m, i) => (m.visible = i >= ASSETS.trains.length || i === k % ASSETS.trains.length));
       else o.mesh.children[0].material = MAT.trains[k];
     }
+    if (type === 'train') o.mesh.userData.lights.visible = v > 0;
+    o.v = v; // m/s vers le joueur (0 = train à l'arrêt)
+    o.horn = o.passed = false;
     o.hit = false;
     o.graceUntil = undefined;
     o.mesh.visible = true;
@@ -466,24 +496,41 @@ export class Game {
       return 'train';
     };
     let row = [pick(), pick(), pick()];
-    if (row.every((t) => t === 'empty')) row[(this.rand() * 3) | 0] = this.rand() < 0.5 ? 'low' : 'high';
-    // Toujours au moins une voie franchissable (sans train).
-    if (row.every((t) => t === 'train')) row[(this.rand() * 3) | 0] = 'low';
+    // Train qui fonce vers le joueur : on annonce d'abord sa voie (laissée vide sur RESERVE m),
+    // puis il part de là-bas. Tirages toujours dans le même ordre : même parcours à deux.
+    let rush = -1;
+    const r = this.rand(), lane = (this.rand() * 3) | 0;
+    if (this.reserve && at >= this.reserve.until) {
+      rush = this.reserve.lane;
+      this.reserve = null;
+    } else if (!this.reserve && level >= 0.12 && r < 0.2 + 0.25 * level) this.reserve = { lane, until: at + RESERVE };
+    if (this.reserve) row[this.reserve.lane] = 'empty';
+    if (rush >= 0) row[rush] = 'train';
+    if (row.every((t) => t === 'empty')) {
+      const free = [0, 1, 2].filter((i) => i !== this.reserve?.lane);
+      row[free[(this.rand() * free.length) | 0]] = this.rand() < 0.5 ? 'low' : 'high';
+    }
+    // Toujours au moins une voie franchissable (sans train) ; et quand un train va foncer,
+    // une voie libre en dehors de la sienne pour l'esquiver.
+    const busy = rush >= 0 ? rush : this.reserve ? this.reserve.lane : -1;
+    const others = [0, 1, 2].filter((i) => i !== busy);
+    if (others.every((i) => row[i] === 'train')) row[others[(this.rand() * others.length) | 0]] = 'low';
     // Au début : un seul type d'action demandé à la fois, et toujours une voie libre.
-    if (level < 0.15) {
+    if (level < 0.12) {
       const first = row.find((t) => t !== 'empty');
       row = row.map((t) => (t === 'empty' ? t : first));
       if (!row.includes('empty')) row[(this.rand() * 3) | 0] = 'empty';
     }
-    row.forEach((type, i) => type !== 'empty' && this.addObstacle(type, i - 1, z0));
+    const rushV = 7 + 9 * level; // m/s, en plus de la course du joueur
+    row.forEach((type, i) => type !== 'empty' && this.addObstacle(type, i - 1, z0, i === rush ? rushV : 0));
 
-    // Des pièces sur une voie franchissable.
-    const open = [0, 1, 2].filter((i) => row[i] !== 'train');
+    // Des pièces sur une voie franchissable (pas sur la voie d'un train qui arrive).
+    const open = [0, 1, 2].filter((i) => row[i] !== 'train' && i !== this.reserve?.lane);
     const i = open[(this.rand() * open.length) | 0];
     if (row[i] === 'low') this.addCoins(i - 1, z0 + 3.2, 5, true);
     else if (row[i] === 'empty') this.addCoins(i - 1, z0 + 4, 5, false);
 
-    const gapTime = 2.3 - 0.7 * level; // secondes entre deux rangées, à vitesse de course
+    const gapTime = 2.1 - 0.7 * level; // secondes entre deux rangées, à vitesse de course
     this.nextRow = -over + Math.max(this.speedMax(at) * gapTime, 20) + (row.includes('train') ? TRAIN_LEN : 0);
   }
 
@@ -533,7 +580,8 @@ export class Game {
     const rolling = this.rollLeft > 0;
 
     for (const o of this.obstacles) {
-      o.mesh.position.z += dz;
+      o.mesh.position.z += dz + o.v * dt;
+      if (o.v) this.rushFx(o);
       if (o.hit || this.invincible > 0) continue;
       const z = o.mesh.position.z;
       const sameLane = Math.abs(o.mesh.position.x - this.px) <= 1.25;
@@ -590,6 +638,22 @@ export class Game {
     }
   }
 
+  // Train qui fonce : klaxon à l'approche, souffle et petite secousse quand il frôle le joueur.
+  rushFx(o, quiet = false) {
+    const front = o.mesh.position.z + o.len / 2;
+    if (!o.horn && front > HORN_Z) {
+      o.horn = true;
+      if (!quiet) this.onEvent('horn', Math.abs(o.mesh.position.x - this.px) < 1.3);
+    }
+    if (!o.passed && front > 0) {
+      o.passed = true;
+      if (!o.hit && Math.abs(o.mesh.position.x - this.px) < LANE_W + 1.3) {
+        this.addTrauma(0.32);
+        if (!quiet) this.onEvent('whoosh');
+      }
+    }
+  }
+
   // ---- Mode spectateur : rejoue la course de l'adversaire sur le même parcours (même graine).
   watchStart(seed, kind) {
     this.resetRun(seed);
@@ -621,7 +685,10 @@ export class Game {
     this.distance += dz;
     this.scroll += dz;
     this.nextRow -= dz;
-    for (const o of this.obstacles) o.mesh.position.z += dz;
+    for (const o of this.obstacles) {
+      o.mesh.position.z += dz + o.v * dt;
+      if (o.v) this.rushFx(o, true);
+    }
     for (const c of this.coins) {
       c.mesh.position.z += dz;
       c.mesh.rotation.z += dt * 5;
@@ -638,6 +705,8 @@ export class Game {
 
   // dt = temps de jeu (ralenti pendant le mini-gel), realDt = temps réel.
   animate(dt, realDt = dt) {
+    const blinkOn = Math.floor((this.time || 0) * 7) % 2 === 0;
+    MAT.glow.opacity = blinkOn ? 0.85 : 0.35;
     // Traverses
     const m = this._m;
     const off = this.scroll % SLEEPER_GAP;

@@ -1,9 +1,9 @@
 // Subway Sport Duo : caméra -> pose -> détecteur -> jeu, plus la liaison avec l'autre joueur.
-import { Game } from './game.js?v=15';
-import { loadAssets } from './assets.js?v=15';
-import { MotionDetector, DEFAULTS } from './motion.js?v=15';
-import { Net, newCode, cleanCode } from './net.js?v=15';
-import { Voice, opusSupported } from './voice.js?v=15';
+import { Game } from './game.js?v=16';
+import { loadAssets } from './assets.js?v=16';
+import { MotionDetector, DEFAULTS } from './motion.js?v=16';
+import { Net, newCode, cleanCode } from './net.js?v=16';
+import { Voice, opusSupported } from './voice.js?v=16';
 import { PoseLandmarker, FilesetResolver } from '../vendor/vision_bundle.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -28,7 +28,7 @@ const COUNTDOWN = 3;
 const RUN_TIMEOUT = 1.1; // sans petit saut pendant ce temps, le personnage s'arrête
 const CADENCE_NORMAL = 2.6, PACE_PER_HOP = 0.45, PACE_MIN = 0.5, PACE_MAX = 1.6;
 const SEND_EVERY = 1 / 12; // état envoyé à l'adversaire 12 fois par seconde
-const AVA = (c) => `icones/perso-${c === 'fille' ? 'fille' : 'garcon'}.png?v=15`; // portraits des personnages
+const AVA = (c) => `icones/perso-${c === 'fille' ? 'fille' : 'garcon'}.png?v=16`; // portraits des personnages
 const ic = (n, cls = '') => `<svg class="ic ${cls}"><use href="#i-${n}"/></svg>`;
 // Change le contenu d'un élément seulement s'il a changé (le HUD est mis à jour à chaque image).
 const setText = (el, v) => el.textContent !== String(v) && (el.textContent = v);
@@ -41,7 +41,7 @@ const detector = new MotionDetector({ ...DEFAULTS, ...load('subway-sport-cfg', {
 // Modèles 3D : si le chargement rate (réseau…), le jeu repart avec les anciens personnages en cubes.
 let assets = null;
 try {
-  assets = await loadAssets('?v=15');
+  assets = await loadAssets('?v=16');
 } catch (e) {
   console.warn('Modèles 3D non chargés, retour aux cubes :', e);
 }
@@ -58,6 +58,7 @@ let phase = 'loading'; // loading | lobby | ready | calib | waiting | countdown 
 let landmarker = null;
 let camOk = false;
 let camLoading = true; // modèle de pose en cours de chargement (~15 Mo la première fois sur téléphone)
+let noCamera = false; // ?sanscamera (essais au clavier) : pas de bouton caméra
 let keyboard = false; // jeu au clavier : le personnage court tout seul
 let lastVideoTime = -1;
 let measure = null;
@@ -304,7 +305,6 @@ function pick(groupId, attr, value) {
 }
 $('name').value = me.name;
 pick('charChoice', 'char', me.char);
-$('micSwitch').setAttribute('aria-pressed', String(me.mic));
 $('charChoice').addEventListener('click', (e) => {
   const b = e.target.closest('.choice');
   if (!b) return;
@@ -312,10 +312,6 @@ $('charChoice').addEventListener('click', (e) => {
   pick('charChoice', 'char', me.char);
   game.setCharacter(me.char);
   $('meAva').src = AVA(me.char);
-});
-$('micSwitch').addEventListener('click', () => {
-  me.mic = !me.mic;
-  $('micSwitch').setAttribute('aria-pressed', String(me.mic));
 });
 const params = new URLSearchParams(location.search);
 let linkCode = cleanCode(params.get('salle'));
@@ -422,12 +418,21 @@ async function initCamera() {
       landmarker = await create('CPU');
     }
     camOk = true;
+    $('cam').style.display = '';
+    $('camBtn').style.display = '';
   } catch (err) {
     console.error(err);
     $('cam').style.display = 'none';
     $('camBtn').style.display = 'none';
   }
   camLoading = false;
+}
+// Bouton « avec la caméra » : si elle a été refusée ou n'a pas démarré, on la redemande
+// (sur iPhone, une demande faite après un toucher passe mieux).
+function wantCamera() {
+  if (camOk || camLoading || noCamera) return;
+  camLoading = true;
+  initCamera();
 }
 
 function trackPose(t) {
@@ -516,7 +521,10 @@ let actsKey = '';
 function renderActs() {
   const list = [];
   const canRestart = phase === 'ready' || (phase === 'over' && !oppAlive());
-  if (canRestart) list.push(['touch', (TOUCH ? ic('doigt') : ic('jouer', 'plein')) + (phase === 'over' ? 'Rejouer' : 'Jouer') + (TOUCH ? ' au doigt' : ' au clavier'), '']);
+  const again = phase === 'over' ? 'Rejouer' : 'Jouer';
+  if (canRestart && !noCamera) list.push(['cam', ic('camera') + again + ' avec la caméra', '']);
+  if (canRestart) list.push(['touch', (TOUCH ? ic('doigt') : ic('jouer', 'plein')) + again + (TOUCH ? ' au doigt' : ' au clavier'), noCamera ? '' : 'bleu']);
+  if (phase === 'calib') list.push(['touch', (TOUCH ? ic('doigt') + 'Plutôt au doigt' : ic('jouer', 'plein') + 'Plutôt au clavier'), 'bleu']);
   if (phase === 'waiting' && (!opp || !net.connected)) list.push(['solo', ic('jouer', 'plein') + 'Jouer seul en attendant', 'bleu']);
   const key = list.map((a) => a[0] + a[1]).join('|');
   if (key === actsKey) return;
@@ -536,9 +544,14 @@ $('acts').addEventListener('click', (e) => {
   const act = e.target.closest('button')?.dataset.act;
   audioCtx();
   keepAwake();
-  if (act === 'touch' && (phase === 'ready' || (phase === 'over' && !oppAlive()))) {
+  const canRestart = phase === 'ready' || (phase === 'over' && !oppAlive());
+  if (act === 'touch' && (canRestart || phase === 'calib')) {
     keyboard = true;
     ready();
+  } else if (act === 'cam' && canRestart) {
+    // Avec la caméra : on se place, on ne bouge plus 2 s, et c'est parti.
+    wantCamera();
+    setPhase('calib');
   } else if (act === 'solo' && phase === 'waiting' && (!opp || !net.connected)) startCountdown((Math.random() * 2 ** 32) >>> 0);
 });
 
@@ -580,14 +593,14 @@ function updatePanel(dt, t) {
     const how = !camOk
       ? camLoading
         ? 'Chargement de la caméra…'
-        : TOUCH
-          ? 'Pas de caméra : joue au doigt.'
-          : 'Pas de caméra : appuie sur Entrée pour jouer au clavier.'
+        : noCamera
+          ? TOUCH
+            ? 'Pas de caméra : joue au doigt.'
+            : 'Pas de caméra : appuie sur Entrée pour jouer au clavier.'
+          : 'Caméra pas encore autorisée :\ntouche « avec la caméra » pour la demander.'
       : measure
         ? `Lève les deux bras pour ${phase === 'over' ? 'la revanche' : 'te mettre prêt(e)'} !`
-        : TOUCH
-          ? 'Pose le téléphone debout et recule à 2–3 m :\non doit te voir en entier, de la tête aux pieds.'
-          : 'Recule à 2–3 m de la caméra :\non doit te voir en entier, de la tête aux pieds.';
+        : 'Avec la caméra, tu cours avec tout ton corps.\nOu joue au doigt sur l’écran.';
     if (phase === 'over') {
       resultText(); // compte la victoire (une seule fois) et joue le son du résultat
       setHTML($('resultat'), resultHTML());
@@ -608,7 +621,15 @@ function updatePanel(dt, t) {
     if (el < 0.05) detector.startCalibration();
     if (el > CALIB_TIME - 1.5) detector.addCalibrationSample(measure);
     bar.style.width = Math.min(100, (el / CALIB_TIME) * 100) + '%';
-    msg.textContent = handsUp
+    msg.textContent = !camOk
+      ? camLoading
+        ? 'Démarrage de la caméra…'
+        : 'La caméra est bloquée : autorise-la dans les réglages\ndu téléphone, ou joue au doigt.'
+      : !measure
+        ? TOUCH
+          ? 'Pose le téléphone debout et recule à 2–3 m :\non doit te voir de la tête aux pieds.'
+          : 'Recule à 2–3 m de la caméra :\non doit te voir de la tête aux pieds.'
+        : handsUp
       ? 'Baisse les bras, reste debout au centre…'
       : el < 0.3
         ? 'Mets-toi à ta place de jeu,\npuis ne bouge plus, bras le long du corps…'
@@ -738,6 +759,16 @@ function sendState(t) {
 
 game.onEvent = (e, info) => {
   if (e === 'coin') beep(1320 * 2 ** (Math.min(info, 7) / 12), 0.07, 'triangle'); // série : un demi-ton de plus par pièce
+  else if (e === 'horn') {
+    // Klaxon à deux tons (plus fort si le train arrive sur ta voie) + alerte à l'écran.
+    const v = info ? 0.07 : 0.035;
+    beep(311, 0.55, 'sawtooth', v);
+    beep(392, 0.55, 'sawtooth', v);
+    if (info) flash('ATTENTION !');
+  } else if (e === 'whoosh') {
+    beep(180, 0.25, 'sawtooth', 0.05);
+    beep(90, 0.3, 'triangle', 0.08);
+  }
   else if (e === 'jump') beep(520, 0.12, 'sine', 0.08);
   else if (e === 'roll') beep(260, 0.12, 'sine', 0.08);
   else if (e === 'daytime') {
@@ -874,6 +905,7 @@ function leaveGame() {
   history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : ''));
   wakeLock?.release().catch(() => {});
   setPhase('lobby');
+  ajusterAccueil();
 }
 for (const id of ['quitBtn', 'quitBtn2']) $(id).addEventListener('click', () => askQuit(true));
 $('confirmYes').addEventListener('click', leaveGame);
@@ -937,11 +969,28 @@ function frame() {
   requestAnimationFrame(frame);
 }
 
+// Accueil : si tout ne tient pas en hauteur (petit iPhone), on rapetisse un peu le logo et le
+// formulaire pour qu'ils restent centrés, sans avoir à faire défiler.
+function ajusterAccueil() {
+  const l = $('lobby');
+  if (l.classList.contains('hidden')) return;
+  l.style.setProperty('--zoom', 1);
+  const cs = getComputedStyle(l);
+  const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  const need = l.scrollHeight - pad, have = l.clientHeight - pad;
+  if (need > have + 1) l.style.setProperty('--zoom', Math.max(0.72, have / need).toFixed(3));
+}
+addEventListener('resize', () => requestAnimationFrame(ajusterAccueil));
+document.fonts?.ready.then(ajusterAccueil);
+for (const img of document.querySelectorAll('#lobby img')) img.addEventListener('load', ajusterAccueil);
+
 window.duo = { game, net, get phase() { return phase; }, get voice() { return voice; } }; // pour le débogage dans la console
 setPhase('lobby');
+ajusterAccueil();
 // ?sanscamera : pour tester à deux sur un même PC, au clavier.
 if (!params.has('sanscamera')) initCamera();
 else {
+  noCamera = true;
   $('cam').style.display = 'none';
   $('camBtn').style.display = 'none';
   camLoading = false;
